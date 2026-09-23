@@ -1,20 +1,286 @@
+/* ==========================================================
+   EVENTS PAGE
+   Same calendar dropdowns as events.js, but "View Event Details"
+   opens a centered, full-screen carousel of every visible event
+   with a Material-style "expand from center" effect:
+   the focused card is full width, its neighbours collapse
+   into narrow slices that grow as they slide toward the center.
 
-window.Webflow = window.Webflow || [];
+   (Formerly events-v2.js.)
+   Loads Swiper from jsDelivr on its own.
+   ========================================================== */
 
-window.Webflow.push(function () {
-  if (document.getElementById('event-focus-dialog')) return;
+(() => {
+  if (window.__savoyaEventsV2) return;
+  window.__savoyaEventsV2 = true;
 
-  const reducedMotion = window.matchMedia(
-    '(prefers-reduced-motion: reduce)'
-  );
+  const SWIPER_JS = 'https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js';
+  const SWIPER_CSS = 'https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css';
 
-  const dropdowns = [];
-
+  const MAX_WIDTH = 720;        // px, focused card on desktop
+  const COLLAPSED_RATIO = 0.24; // neighbour slice width, as a share of the card
+  const COLLAPSED_RATIO_MOBILE = 0.12;
+  const GAP = 8;                // px between cards
+  const RADIUS = 20;            // px card corner radius
   const CLOSE_LABEL = 'Close event details';
+  const SPEED = 650;            // ms, slide transition
+  const EASE = 'cubic-bezier(.22, 1, .36, 1)'; // shared by the track and the cards
+  // Side cards: slightly see-through, under a flat black overlay,
+  // and the whole row fades out toward the left and right screen edges.
+  const INACTIVE_OPACITY = 0.8; // side card opacity
+  const OVERLAY = 0.75;         // black overlay on side cards (75%)
+  // Depth: side cards sit "behind" the focused one
+  const SIDE_SCALE = 0.9;       // side cards shrink to 90%
+  const SIDE_BLUR = 2;          // px, out-of-focus blur on side cards
+  const SIDE_GRAYSCALE = 0.6;   // colour drains from side cards
+  const PARALLAX = 0.06;        // image drifts inside its card (share of card width)
 
-  /* ---------- Shared button accessibility ---------- */
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  /* ==========================================================
+     1. STYLES (carousel only — card styles stay in events.css)
+     ========================================================== */
+
+  const css = `
+    .ev2-dialog {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh; height: 100dvh;
+      max-width: none; max-height: none;
+      margin: 0; padding: 0; border: 0;
+      background: transparent; color: inherit;
+      overflow: hidden;
+    }
+    .ev2-dialog[open] { display: flex; align-items: center; }
+    .ev2-dialog:focus, .ev2-dialog:focus-visible { outline: none; }
+
+    .ev2-dialog::backdrop {
+      background: rgba(8, 8, 10, .9);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      animation: ev2-fade-in 300ms ease both;
+    }
+    .ev2-dialog.is-closing::backdrop { animation: ev2-fade-out 200ms ease both; }
+
+    .ev2-dialog .swiper {
+      width: 100%;
+      padding: 24px 0;
+      overflow: visible;
+    }
+    .ev2-dialog .swiper-wrapper { align-items: center; }
+
+    /* The site styles a .swiper class; keep ours see-through */
+    .ev2-dialog .swiper,
+    .ev2-dialog .swiper-wrapper,
+    .ev2-dialog .swiper-slide { background: transparent !important; }
+
+    /* Cloned cards skip the scroll-reveal animations */
+    .ev2-dialog .reveal-up,
+    .ev2-dialog .fade-in,
+    .ev2-dialog .focus-in {
+      opacity: 1 !important;
+      transform: none !important;
+      filter: none !important;
+      clip-path: none !important;
+    }
+
+    .ev2-dialog .swiper-slide {
+      width: var(--ev2-w, ${MAX_WIDTH}px);
+      height: auto;
+    }
+
+    /* The clipped "window" that grows and shrinks */
+    .ev2-frame {
+      position: relative;
+      width: 100%;
+      max-height: 86vh;
+      max-height: 86dvh;
+      border-radius: ${RADIUS}px;
+      overflow: hidden;
+      background: #fff;
+      transform-origin: 50% 50%;
+      will-change: clip-path, transform, opacity, filter;
+    }
+
+    /* Soft shadow that follows the clipped card shape */
+    .ev2-dialog .swiper-slide { filter: drop-shadow(0 28px 44px rgba(0, 0, 0, .45)); }
+
+    /* Image window for the parallax drift */
+    .ev2-media { position: relative; overflow: hidden; aspect-ratio: 16 / 9; }
+    .ev2-dialog .ev2-media img {
+      display: block; width: 100%; height: 100%;
+      object-fit: cover;
+      scale: 1.15;          /* room for the drift */
+      will-change: translate;
+    }
+
+    /* Flat black overlay on side cards */
+    .ev2-shade {
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, ${OVERLAY});
+      pointer-events: none;
+      opacity: 0;
+      z-index: 2;
+    }
+
+    /* Fade the row out toward the left and right edges of the screen.
+       The focused card (plus a little room for its shadow) stays solid. */
+    .ev2-dialog .swiper {
+      --ev2-solid: calc(var(--ev2-w, 720px) / 2 + 48px);
+      -webkit-mask-image: linear-gradient(to right,
+        transparent 0,
+        #000 calc(50% - var(--ev2-solid)),
+        #000 calc(50% + var(--ev2-solid)),
+        transparent 100%);
+              mask-image: linear-gradient(to right,
+        transparent 0,
+        #000 calc(50% - var(--ev2-solid)),
+        #000 calc(50% + var(--ev2-solid)),
+        transparent 100%);
+    }
+    .ev2-scroll {
+      height: 100%;
+      max-height: inherit;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .ev2-dialog .ev2-frame .events-card {
+      width: 100% !important;
+      max-width: none !important;
+      height: auto;
+      margin: 0 !important;
+      border: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+      visibility: visible !important;
+    }
+
+    .ev2-dialog .ev2-frame .events-card img {
+      height: auto;
+      aspect-ratio: 16 / 9;
+    }
+
+    .ev2-dialog .ev2-frame .events-card .event-details {
+      display: block !important;
+      -webkit-line-clamp: unset !important;
+      line-clamp: unset;
+      height: auto !important;
+      max-height: none !important;
+      white-space: normal !important;
+      overflow: visible !important;
+    }
+
+    /* Track and cards must share one easing, or the cards "pull back" mid-slide */
+    .ev2-dialog { --swiper-wrapper-transition-timing-function: ${EASE}; }
+    .ev2-dialog .swiper-wrapper { transition-timing-function: ${EASE}; }
+
+    .ev2-dialog .ev2-frame .btn-view-event-details::after {
+      content: "×";
+      font-size: 1.25em;
+      line-height: 1;
+    }
+
+    /* Collapsed neighbours: whole slice is a "go to" target */
+    .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-frame { cursor: pointer; }
+    .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-scroll { pointer-events: none; }
+
+    /* Close + chevrons */
+    .ev2-close,
+    .ev2-nav {
+      position: fixed;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .92);
+      color: #222;
+      cursor: pointer;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, .15);
+      transition: background-color 180ms ease, transform 180ms ease, opacity 180ms ease;
+    }
+    .ev2-close {
+      top: 20px; right: 20px;
+      width: 44px; height: 44px;
+      font: 28px/1 system-ui, sans-serif;
+    }
+    .ev2-nav {
+      top: 50%;
+      width: 48px; height: 48px;
+      margin-top: -24px;
+    }
+    .ev2-nav svg { width: 22px; height: 22px; pointer-events: none; }
+    .ev2-prev { left: 8.33%; }
+    .ev2-next { right: 8.33%; }
+    .ev2-nav.swiper-button-disabled { opacity: .35; cursor: default; }
+
+    @media (hover: hover) {
+      .ev2-close:hover,
+      .ev2-nav:not(.swiper-button-disabled):hover {
+        background: #e4e4e4;
+        transform: scale(1.06);
+      }
+    }
+    .ev2-close:focus-visible,
+    .ev2-nav:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+    @media (max-width: 991px) {
+      .ev2-nav { display: none; }
+    }
+
+    .ev2-dialog.is-single .ev2-nav { display: none; }
+
+    @keyframes ev2-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes ev2-fade-out { from { opacity: 1; } to { opacity: 0; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ev2-dialog::backdrop,
+      .ev2-dialog.is-closing::backdrop { animation: none; }
+      .ev2-close, .ev2-nav { transition: none; }
+    }
+  `;
+
+  const style = document.createElement('style');
+  style.textContent = css;
+  document.head.appendChild(style);
+
+  /* ==========================================================
+     2. LOAD SWIPER (once)
+     ========================================================== */
+
+  function loadSwiper() {
+    if (window.Swiper) return Promise.resolve(window.Swiper);
+
+    if (!document.querySelector(`link[href="${SWIPER_CSS}"]`)) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = SWIPER_CSS;
+      document.head.appendChild(link);
+    }
+
+    return new Promise(function (resolve, reject) {
+      const existing = document.querySelector(`script[src="${SWIPER_JS}"]`);
+      const script = existing || document.createElement('script');
+
+      script.addEventListener('load', function () { resolve(window.Swiper); });
+      script.addEventListener('error', reject);
+
+      if (!existing) {
+        script.src = SWIPER_JS;
+        document.head.appendChild(script);
+      }
+    });
+  }
+
+  /* ==========================================================
+     3. SHARED BUTTON ACCESSIBILITY
+     ========================================================== */
 
   function prepareButton(button) {
+    if (button.dataset.ev2Ready) return;
+    button.dataset.ev2Ready = 'true';
+
     if (button.tagName === 'BUTTON') {
       button.type = 'button';
       return;
@@ -24,243 +290,306 @@ window.Webflow.push(function () {
     button.setAttribute('tabindex', '0');
 
     button.addEventListener('keydown', function (event) {
-      const nativeLink =
-        button.tagName === 'A' && button.hasAttribute('href');
+      const nativeLink = button.tagName === 'A' && button.hasAttribute('href');
 
-      if (
-        event.key === ' ' ||
-        (event.key === 'Enter' && !nativeLink)
-      ) {
+      if (event.key === ' ' || (event.key === 'Enter' && !nativeLink)) {
         event.preventDefault();
         button.click();
       }
     });
   }
 
-  /* ---------- Calendar dropdown setup ---------- */
+  /* ==========================================================
+     4. ADD TO CALENDAR DROPDOWNS
+     Works on page cards and on the cloned cards in the carousel.
+     ========================================================== */
 
-  document.querySelectorAll('.calendar-dropdown').forEach(function (wrapper, index) {
-    const button = wrapper.querySelector('.btn-add-to-cal');
-    const list = wrapper.querySelector('.item-list-add-to-cal');
+  const dropdowns = [];
+  let dropdownCount = 0;
 
-    if (!button || !list) return;
+  function setupDropdowns(root) {
+    root.querySelectorAll('.calendar-dropdown').forEach(function (wrapper) {
+      if (wrapper.dataset.ev2Dropdown) return;
+      wrapper.dataset.ev2Dropdown = 'true';
 
-    const card = button.closest('.events-card');
+      const button = wrapper.querySelector('.btn-add-to-cal');
+      const list = wrapper.querySelector('.item-list-add-to-cal');
 
-    let isOpen = false;
-    let listAnimation = null;
-    let cardAnimation = null;
+      if (!button || !list) return;
 
-    if (!list.id) {
-      let id = 'calendar-options-' + index;
+      const pageCard = wrapper.closest('.w-dyn-item .events-card');
+      let isOpen = false;
+      let listAnimation = null;
+      let cardAnimation = null;
 
-      while (document.getElementById(id)) {
-        id += '-menu';
+      list.id = 'ev2-calendar-options-' + (dropdownCount += 1);
+
+      prepareButton(button);
+      button.setAttribute('aria-controls', list.id);
+      button.setAttribute('aria-expanded', 'false');
+      button.classList.remove('br-bottom-0');
+
+      list.style.display = 'none';
+      list.style.flexDirection = 'column';
+      list.inert = true;
+
+      if (!button.querySelector('.calendar-toggle-icon')) {
+        const icon = document.createElement('span');
+        icon.className = 'calendar-toggle-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        button.appendChild(icon);
       }
 
-      list.id = id;
-    }
-
-    prepareButton(button);
-
-    button.setAttribute('aria-controls', list.id);
-    button.setAttribute('aria-expanded', 'false');
-    button.classList.remove('br-bottom-0');
-
-    list.style.display = 'none';
-    list.style.flexDirection = 'column';
-    list.inert = true;
-
-    /* ---------- Add animated plus / minus icon ---------- */
-
-    if (!button.querySelector('.calendar-toggle-icon')) {
-      const icon = document.createElement('span');
-
-      icon.className = 'calendar-toggle-icon';
-      icon.setAttribute('aria-hidden', 'true');
-
-      button.appendChild(icon);
-    }
-
-    /* ---------- Event card height animation ---------- */
-
-    function setListDisplay(display) {
-      if (!card || reducedMotion.matches) {
-        if (cardAnimation) {
-          cardAnimation.cancel();
-          cardAnimation = null;
+      function setListDisplay(display) {
+        if (!pageCard || reducedMotion.matches) {
+          list.style.display = display;
+          return;
         }
 
-        list.style.display = display;
-        return;
-      }
+        const fromHeight = getComputedStyle(pageCard).height;
 
-      const fromHeight = getComputedStyle(card).height;
-
-      if (cardAnimation) {
-        cardAnimation.cancel();
-        cardAnimation = null;
-      }
-
-      list.style.display = display;
-
-      const toHeight = getComputedStyle(card).height;
-
-      if (fromHeight === toHeight) return;
-
-      const nextAnimation = card.animate(
-        [
-          { height: fromHeight, overflow: 'hidden' },
-          { height: toHeight, overflow: 'hidden' }
-        ],
-        {
-          duration: display === 'none' ? 280 : 420,
-          easing: 'cubic-bezier(.16, 1, .3, 1)'
-        }
-      );
-
-      cardAnimation = nextAnimation;
-
-      nextAnimation.onfinish = function () {
-        if (cardAnimation === nextAnimation) {
-          cardAnimation = null;
-        }
-      };
-    }
-
-    /* ---------- Calendar open / close state ---------- */
-
-    function setOpen(open, immediate) {
-      if (immediate) {
-        if (listAnimation) listAnimation.cancel();
         if (cardAnimation) cardAnimation.cancel();
+        list.style.display = display;
 
-        listAnimation = null;
-        cardAnimation = null;
+        const toHeight = getComputedStyle(pageCard).height;
+        if (fromHeight === toHeight) return;
+
+        cardAnimation = pageCard.animate(
+          [
+            { height: fromHeight, overflow: 'hidden' },
+            { height: toHeight, overflow: 'hidden' }
+          ],
+          {
+            duration: display === 'none' ? 280 : 420,
+            easing: 'cubic-bezier(.16, 1, .3, 1)'
+          }
+        );
+      }
+
+      function setOpen(open, immediate) {
+        if (immediate) {
+          if (listAnimation) listAnimation.cancel();
+          if (cardAnimation) cardAnimation.cancel();
+          listAnimation = null;
+          cardAnimation = null;
+          isOpen = open;
+          button.classList.toggle('br-bottom-0', open);
+          button.setAttribute('aria-expanded', String(open));
+          list.inert = !open;
+          list.style.display = open ? 'flex' : 'none';
+          return;
+        }
+
+        if (isOpen === open) return;
+
+        const current = getComputedStyle(list);
+        const isVisible = current.display !== 'none';
+        const from = {
+          opacity: isVisible ? current.opacity : '0',
+          transform: isVisible ? current.transform : 'translateY(-8px) scale(.98)'
+        };
+
+        if (listAnimation) {
+          listAnimation.cancel();
+          listAnimation = null;
+        }
+
         isOpen = open;
-
         button.classList.toggle('br-bottom-0', open);
         button.setAttribute('aria-expanded', String(open));
 
+        if (!open && list.contains(document.activeElement)) button.focus();
+
         list.inert = !open;
-        list.style.display = open ? 'flex' : 'none';
-        return;
-      }
 
-      if (isOpen === open) return;
+        if (reducedMotion.matches) {
+          setListDisplay(open ? 'flex' : 'none');
+          return;
+        }
 
-      const current = getComputedStyle(list);
-      const isVisible = current.display !== 'none';
+        setListDisplay('flex');
 
-      const from = {
-        opacity: isVisible ? current.opacity : '0',
-        transform: isVisible
-          ? current.transform
-          : 'translateY(-8px) scale(.98)'
-      };
-
-      if (listAnimation) {
-        listAnimation.cancel();
-        listAnimation = null;
-      }
-
-      isOpen = open;
-
-      button.classList.toggle('br-bottom-0', open);
-      button.setAttribute('aria-expanded', String(open));
-
-      if (!open && list.contains(document.activeElement)) {
-        button.focus();
-      }
-
-      list.inert = !open;
-
-      if (reducedMotion.matches) {
-        setListDisplay(open ? 'flex' : 'none');
-        return;
-      }
-
-      setListDisplay('flex');
-
-      const nextAnimation = list.animate(
-        [
-          from,
+        const nextAnimation = list.animate(
+          [
+            from,
+            {
+              opacity: open ? 1 : 0,
+              transform: open ? 'translateY(0) scale(1)' : 'translateY(-6px) scale(.985)'
+            }
+          ],
           {
-            opacity: open ? 1 : 0,
-            transform: open
-              ? 'translateY(0) scale(1)'
-              : 'translateY(-6px) scale(.985)'
+            duration: open ? 360 : 180,
+            easing: open ? 'cubic-bezier(.16, 1, .3, 1)' : 'cubic-bezier(.4, 0, 1, 1)',
+            fill: 'both'
           }
-        ],
-        {
-          duration: open ? 360 : 180,
-          easing: open
-            ? 'cubic-bezier(.16, 1, .3, 1)'
-            : 'cubic-bezier(.4, 0, 1, 1)',
-          fill: 'both'
-        }
-      );
+        );
 
-      listAnimation = nextAnimation;
+        listAnimation = nextAnimation;
 
-      nextAnimation.onfinish = function () {
-        if (listAnimation !== nextAnimation) return;
+        nextAnimation.onfinish = function () {
+          if (listAnimation !== nextAnimation) return;
+          if (!isOpen) setListDisplay('none');
+          nextAnimation.cancel();
+          listAnimation = null;
+        };
+      }
 
-        if (!isOpen) {
-          setListDisplay('none');
-        }
+      dropdowns.push({ wrapper: wrapper, setOpen: setOpen });
 
-        nextAnimation.cancel();
-        listAnimation = null;
-      };
-    }
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        const shouldOpen = !isOpen;
 
-    dropdowns.push({ wrapper, setOpen });
+        dropdowns.forEach(function (item) {
+          if (item.wrapper !== wrapper) item.setOpen(false);
+        });
 
-    /* ---------- Calendar interactions ---------- */
+        setOpen(shouldOpen);
+      });
 
-    button.addEventListener('click', function (event) {
-      event.preventDefault();
-
-      const shouldOpen = !isOpen;
-
-      dropdowns.forEach(function (item) {
-        if (item.wrapper !== wrapper) {
-          item.setOpen(false);
+      wrapper.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && isOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          button.focus();
         }
       });
 
-      setOpen(shouldOpen);
+      list.addEventListener('click', function (event) {
+        if (event.target.closest('a, button')) setOpen(false);
+      });
     });
-
-    wrapper.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape' && isOpen) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        setOpen(false);
-        button.focus();
-      }
-    });
-
-    list.addEventListener('click', function (event) {
-      if (event.target.closest('a, button')) {
-        setOpen(false);
-      }
-    });
-  });
-
-  /* ---------- Close calendar on outside click ---------- */
+  }
 
   document.addEventListener('click', function (event) {
     dropdowns.forEach(function (item) {
-      if (!item.wrapper.contains(event.target)) {
+      if (item.wrapper.isConnected && !item.wrapper.contains(event.target)) {
         item.setOpen(false);
       }
     });
   });
 
-  /* ---------- Expanded event dialog setup ---------- */
+  function closeAllDropdowns() {
+    dropdowns.forEach(function (item) { item.setOpen(false, true); });
+  }
+
+  /* Card width + slice ratio adapt to the screen so the
+     neighbouring slices always stay visible */
+
+  function currentRatio() {
+    return window.innerWidth < 768 ? COLLAPSED_RATIO_MOBILE : COLLAPSED_RATIO;
+  }
+
+  function sizeSlides() {
+    const r = currentRatio();
+    const room = (window.innerWidth - 32 - GAP * 2) / (1 + r);
+    const width = Math.max(240, Math.min(MAX_WIDTH, Math.floor(room)));
+    dialog.style.setProperty('--ev2-w', width + 'px');
+  }
+
+  /* ==========================================================
+     5. MATERIAL "EXPAND FROM CENTER" EFFECT
+     Each slide is clipped from both sides based on its distance
+     from the center, then shifted so the visible parts keep an
+     even GAP between them. Distance 0 = full card,
+     distance ≥ 1 = narrow slice (COLLAPSED_RATIO).
+     ========================================================== */
+
+  function applyMaterial(swiper) {
+    const slides = swiper.slides;
+    if (!slides.length) return;
+
+    const W = slides[0].offsetWidth;
+    const S = GAP;
+    const r = currentRatio();
+
+    // Distance between the centers of a full card and a collapsed neighbour
+    // Side cards are scaled down, so measure their visible (scaled) width
+    // to keep the gutter exactly GAP wide.
+    const sliver = r * W * SIDE_SCALE;
+    const firstStep = W / 2 + S + sliver / 2;
+    // Distance between two collapsed neighbours
+    const nextStep = sliver + S;
+
+    // Our own progress: 0 = centered, +1 = one card to the left, -1 = one to the right.
+    // (Swiper's slide.progress drifts a few % with auto-width slides + spaceBetween,
+    //  which left the focused card slightly clipped and shaded.)
+    const grid = swiper.slidesGrid;
+    const step = W + S;
+
+    slides.forEach(function (slide, index) {
+      const p = grid[index] === undefined ? slide.progress : (-swiper.translate - grid[index]) / step;
+      const d = Math.abs(p);
+      const sign = p === 0 ? 0 : p > 0 ? -1 : 1; // negative progress = to the right
+
+      const visibleRatio = 1 - (1 - r) * Math.min(d, 1);
+      const clip = ((1 - visibleRatio) * W) / 2;
+
+      const desired = d <= 1 ? d * firstStep : firstStep + (d - 1) * nextStep;
+      const natural = d * (W + S);
+      const shift = sign * (desired - natural);
+
+      const frame = slide.querySelector('.ev2-frame');
+      if (!frame) return;
+
+      frame.style.clipPath =
+        'inset(0 ' + clip.toFixed(2) + 'px 0 ' + clip.toFixed(2) + 'px round ' + RADIUS + 'px)';
+      // 0 = focused, 1 = fully a side card
+      const amount = Math.min(d, 1);
+      const scale = 1 - (1 - SIDE_SCALE) * amount;
+
+      frame.style.transform =
+        'translate3d(' + shift.toFixed(2) + 'px, 0, 0) scale(' + scale.toFixed(4) + ')';
+
+      // Side cards: fade, drain colour, soften focus, darken under the overlay
+      frame.style.opacity = String(1 - (1 - INACTIVE_OPACITY) * amount);
+      frame.style.filter = amount < 0.001
+        ? 'none'
+        : 'blur(' + (SIDE_BLUR * amount).toFixed(2) + 'px) grayscale(' + (SIDE_GRAYSCALE * amount).toFixed(3) + ')';
+
+      const shade = frame.querySelector('.ev2-shade');
+      if (shade) shade.style.opacity = String(amount);
+
+      // Parallax: the photo drifts the other way as the card travels
+      const img = frame.querySelector('.ev2-media img');
+      if (img) {
+        const drift = Math.max(-1, Math.min(1, p)) * W * PARALLAX;
+        // "translate" (not "transform"): the photo's reveal-up class forces transform: none
+        img.style.translate = drift.toFixed(2) + 'px 0';
+      }
+
+      slide.style.zIndex = String(100 - Math.round(d * 10));
+    });
+  }
+
+  function setMaterialTransition(swiper, duration) {
+    swiper.slides.forEach(function (slide) {
+      const frame = slide.querySelector('.ev2-frame');
+      if (!frame) return;
+      frame.style.transitionProperty = 'clip-path, transform, opacity, filter';
+      frame.style.transitionDuration = duration + 'ms';
+      frame.style.transitionTimingFunction = EASE;
+
+      const shade = frame.querySelector('.ev2-shade');
+      if (shade) {
+        shade.style.transitionProperty = 'opacity';
+        shade.style.transitionDuration = duration + 'ms';
+        shade.style.transitionTimingFunction = EASE;
+      }
+
+      const img = frame.querySelector('.ev2-media img');
+      if (img) {
+        img.style.transitionProperty = 'translate';
+        img.style.transitionDuration = duration + 'ms';
+        img.style.transitionTimingFunction = EASE;
+      }
+    });
+  }
+
+  /* ==========================================================
+     6. THE CAROUSEL DIALOG
+     ========================================================== */
 
   const chevron = function (path) {
     return (
@@ -271,336 +600,181 @@ window.Webflow.push(function () {
   };
 
   const dialog = document.createElement('dialog');
-
-  dialog.id = 'event-focus-dialog';
-  dialog.className = 'event-focus-dialog';
+  dialog.className = 'ev2-dialog';
   dialog.setAttribute('aria-label', 'Event details');
-
   dialog.innerHTML = `
-    <div class="event-focus-panel">
-      <div class="event-focus-toolbar">
-        <button
-          class="event-focus-close"
-          type="button"
-          aria-label="Close event details"
-          autofocus
-        >×</button>
-      </div>
-      <div class="event-focus-content"></div>
-    </div>
-    <button
-      class="event-focus-nav event-focus-prev"
-      type="button"
-      aria-label="Previous event"
-    >${chevron('M15 18l-6-6 6-6')}</button>
-    <button
-      class="event-focus-nav event-focus-next"
-      type="button"
-      aria-label="Next event"
-    >${chevron('M9 18l6-6-6-6')}</button>
+    <button class="ev2-close" type="button" aria-label="${CLOSE_LABEL}">×</button>
+    <button class="ev2-nav ev2-prev" type="button" aria-label="Previous event">${chevron('M15 18l-6-6 6-6')}</button>
+    <button class="ev2-nav ev2-next" type="button" aria-label="Next event">${chevron('M9 18l6-6-6-6')}</button>
+    <div class="swiper"><div class="swiper-wrapper"></div></div>
   `;
-
   document.body.appendChild(dialog);
 
-  const panel = dialog.querySelector('.event-focus-panel');
-  const content = dialog.querySelector('.event-focus-content');
-  const closeButton = dialog.querySelector('.event-focus-close');
-  const prevButton = dialog.querySelector('.event-focus-prev');
-  const nextButton = dialog.querySelector('.event-focus-next');
+  const swiperEl = dialog.querySelector('.swiper');
+  const wrapperEl = dialog.querySelector('.swiper-wrapper');
+  const closeButton = dialog.querySelector('.ev2-close');
+  const prevButton = dialog.querySelector('.ev2-prev');
+  const nextButton = dialog.querySelector('.ev2-next');
 
-  let activeCard = null;
-  let activeButton = null;
-  let placeholder = null;
-  let motion = null;
-  let slideMotion = null;
+  let swiper = null;
+  let returnFocus = null;
   let closing = false;
   let previousOverflow = '';
-  let navCards = [];
-  let navIndex = 0;
 
-  /* ---------- Button label: "Close event details" in popup ---------- */
+  function buildSlide(card) {
+    const clone = card.cloneNode(true);
 
-  function setCloseLabel(button) {
-    if (!button) return;
+    // Clean up anything that must stay unique or page-only
+    clone.querySelectorAll('[id]').forEach(function (el) { el.removeAttribute('id'); });
+    clone.querySelectorAll('[data-ev2-dropdown], [data-ev2-ready]').forEach(function (el) {
+      delete el.dataset.ev2Dropdown;
+      delete el.dataset.ev2Ready;
+    });
+    clone.querySelectorAll('.calendar-toggle-icon').forEach(function (el) { el.remove(); });
+    clone.removeAttribute('style');
 
-    if (button.dataset.originalLabel === undefined) {
-      button.dataset.originalLabel = button.textContent;
+    const details = clone.querySelector('.btn-view-event-details');
+    if (details) {
+      details.textContent = CLOSE_LABEL;
+      details.removeAttribute('aria-haspopup');
+      details.removeAttribute('aria-controls');
+      details.removeAttribute('aria-expanded');
+      details.addEventListener('click', function (event) {
+        event.preventDefault();
+        closeCarousel();
+      });
+      prepareButton(details);
     }
 
-    button.textContent = CLOSE_LABEL;
-    button.setAttribute('aria-expanded', 'true');
-  }
+    const slide = document.createElement('div');
+    slide.className = 'swiper-slide';
 
-  function restoreLabel(button) {
-    if (!button) return;
+    const frame = document.createElement('div');
+    frame.className = 'ev2-frame';
 
-    if (button.dataset.originalLabel !== undefined) {
-      button.textContent = button.dataset.originalLabel;
-      delete button.dataset.originalLabel;
+    const scroll = document.createElement('div');
+    scroll.className = 'ev2-scroll';
+
+    const shade = document.createElement('div');
+    shade.className = 'ev2-shade';
+    shade.setAttribute('aria-hidden', 'true');
+
+    // Wrap the photo so it can drift inside a fixed window
+    const photo = clone.querySelector('.events-img');
+    if (photo) {
+      const media = document.createElement('div');
+      media.className = 'ev2-media';
+      photo.parentNode.insertBefore(media, photo);
+      media.appendChild(photo);
     }
 
-    button.setAttribute('aria-expanded', 'false');
+    scroll.appendChild(clone);
+    frame.appendChild(scroll);
+    frame.appendChild(shade);
+    slide.appendChild(frame);
+
+    setupDropdowns(clone);
+
+    return slide;
   }
 
-  /* ---------- Keep the card's space in the page ---------- */
+  async function openCarousel(card, button) {
+    if (dialog.open) return;
 
-  function createPlaceholder(card) {
-    const rect = card.getBoundingClientRect();
-    const styles = getComputedStyle(card);
-    const holder = document.createElement('div');
+    const Swiper = await loadSwiper();
 
-    holder.setAttribute('aria-hidden', 'true');
+    closeAllDropdowns();
 
-    Object.assign(holder.style, {
-      width: rect.width + 'px',
-      height: rect.height + 'px',
-      maxWidth: '100%',
-      boxSizing: 'border-box',
-      margin: styles.margin,
-      flex: styles.flex,
-      alignSelf: styles.alignSelf,
-      gridArea: styles.gridArea,
-      visibility: 'hidden',
-      pointerEvents: 'none'
-    });
+    // Every event currently visible on the page (respects search/filters)
+    const cards = Array.from(document.querySelectorAll('.events .w-dyn-item .events-card'))
+      .filter(function (item) { return item.getClientRects().length > 0; });
 
-    return holder;
-  }
+    const startIndex = Math.max(cards.indexOf(card), 0);
 
-  function moveIntoDialog(card) {
-    placeholder = createPlaceholder(card);
-    card.before(placeholder);
+    wrapperEl.innerHTML = '';
+    cards.forEach(function (item) { wrapperEl.appendChild(buildSlide(item)); });
 
-    // Moving the original preserves its calendar listeners.
-    content.appendChild(card);
-  }
+    dialog.classList.toggle('is-single', cards.length < 2);
 
-  function returnToPage() {
-    if (placeholder && activeCard) {
-      placeholder.replaceWith(activeCard);
-    }
-
-    placeholder = null;
-  }
-
-  function closeCardDropdowns(card) {
-    dropdowns.forEach(function (item) {
-      if (card && card.contains(item.wrapper)) {
-        item.setOpen(false, true);
-      }
-    });
-  }
-
-  /* ---------- View event details buttons ---------- */
-
-  document.querySelectorAll(
-    '.events .btn-view-event-details'
-  ).forEach(function (button) {
-    prepareButton(button);
-
-    button.setAttribute('aria-haspopup', 'dialog');
-    button.setAttribute('aria-controls', dialog.id);
-    button.setAttribute('aria-expanded', 'false');
-
-    button.addEventListener('click', function (event) {
-      event.preventDefault();
-
-      if (activeCard) {
-        if (activeButton === button) {
-          closeDetails();
-        }
-
-        return;
-      }
-
-      const card = button.closest('.events-card');
-
-      if (card) {
-        openDetails(card, button);
-      }
-    });
-  });
-
-  /* ---------- Open expanded event ---------- */
-
-  function openDetails(card, button) {
-    // Settle calendar animations before moving the card.
-    dropdowns.forEach(function (item) {
-      item.setOpen(false, true);
-    });
-
-    // Every event currently visible on the page (respects filters/search).
-    navCards = Array.from(
-      document.querySelectorAll('.events .events-card')
-    ).filter(function (item) {
-      return item.getClientRects().length > 0;
-    });
-
-    navIndex = Math.max(navCards.indexOf(card), 0);
-    dialog.classList.toggle('is-single', navCards.length < 2);
-
-    activeCard = card;
-    activeButton = button;
-
-    moveIntoDialog(card);
-    setCloseLabel(button);
-
+    returnFocus = button;
     previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     dialog.showModal();
-    panel.scrollTop = 0;
+    closeButton.focus({ preventScroll: true });
+
+    sizeSlides();
+
+    swiper = new Swiper(swiperEl, {
+      slidesPerView: 'auto',
+      centeredSlides: true,
+      spaceBetween: GAP,
+      initialSlide: startIndex,
+      speed: reducedMotion.matches ? 0 : SPEED,
+      grabCursor: true,
+      watchSlidesProgress: true,
+      slideToClickedSlide: true,
+      keyboard: { enabled: true },
+      a11y: { enabled: true },
+      navigation: { prevEl: prevButton, nextEl: nextButton },
+      on: {
+        init: applyMaterial,
+        progress: applyMaterial,
+        setTranslate: applyMaterial,
+        beforeResize: sizeSlides,
+        resize: applyMaterial,
+        setTransition: setMaterialTransition,
+        slideChange: function (s) {
+          closeAllDropdowns();
+          dialog.querySelectorAll('.ev2-scroll').forEach(function (el) { el.scrollTop = 0; });
+          revealContent(s.slides[s.activeIndex], 180);
+        }
+      }
+    });
+
+    applyMaterial(swiper);
 
     if (!reducedMotion.matches) {
-      dialog.querySelectorAll('.event-focus-nav').forEach(function (nav) {
-        nav.animate(
-          [{ opacity: 0 }, { opacity: 1 }],
-          { duration: 300, easing: 'ease' }
-        );
+      // Opens from the center: the focused card grows out of the middle
+      swiperEl.animate(
+        [
+          { opacity: 0, transform: 'scale(.9)' },
+          { opacity: 1, transform: 'scale(1)' }
+        ],
+        { duration: 450, easing: 'cubic-bezier(.16, 1, .3, 1)' }
+      );
+
+      dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
+        el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease' });
       });
 
-      motion = panel.animate(
-        [
-          {
-            opacity: 0,
-            transform: 'translateY(20px) scale(.94)'
-          },
-          {
-            opacity: 1,
-            transform: 'translateY(0) scale(1)'
-          }
-        ],
-        {
-          duration: 420,
-          easing: 'cubic-bezier(.16, 1, .3, 1)'
-        }
-      );
+      revealContent(swiper.slides[swiper.activeIndex], 220);
     }
   }
 
-  /* ---------- Previous / next event ---------- */
+  // The focused card's text rises in, one line after another
+  function revealContent(slide, delay) {
+    if (!slide || reducedMotion.matches) return;
 
-  function showEvent(step) {
-    if (!activeCard || closing || navCards.length < 2) return;
+    const parts = slide.querySelectorAll(
+      '.events-card-heading > *, .event-details, .events-footer'
+    );
 
-    const total = navCards.length;
-    const index = (navIndex + step + total) % total;
-    const card = navCards[index];
-
-    if (!card || card === activeCard) return;
-
-    closeCardDropdowns(activeCard);
-    restoreLabel(activeButton);
-    returnToPage();
-
-    activeCard = card;
-    activeButton = card.querySelector('.btn-view-event-details');
-    navIndex = index;
-
-    moveIntoDialog(card);
-    setCloseLabel(activeButton);
-    panel.scrollTop = 0;
-
-    if (slideMotion) {
-      slideMotion.cancel();
-      slideMotion = null;
-    }
-
-    if (!reducedMotion.matches) {
-      slideMotion = content.animate(
+    parts.forEach(function (el, i) {
+      el.getAnimations().forEach(function (a) { a.cancel(); });
+      el.animate(
         [
-          {
-            opacity: 0,
-            transform: 'translateX(' + (step > 0 ? 32 : -32) + 'px)'
-          },
-          {
-            opacity: 1,
-            transform: 'translateX(0)'
-          }
+          { opacity: 0, transform: 'translateY(14px)' },
+          { opacity: 1, transform: 'translateY(0)' }
         ],
-        {
-          duration: 320,
-          easing: 'cubic-bezier(.16, 1, .3, 1)'
-        }
+        { duration: 600, delay: delay + i * 70, easing: EASE, fill: 'backwards' }
       );
-
-      slideMotion.onfinish = function () {
-        slideMotion = null;
-      };
-    }
+    });
   }
 
-  prevButton.addEventListener('click', function () {
-    showEvent(-1);
-  });
-
-  nextButton.addEventListener('click', function () {
-    showEvent(1);
-  });
-
-  /* ---------- Keyboard arrows ---------- */
-
-  dialog.addEventListener('keydown', function (event) {
-    if (event.target.closest('input, textarea, select')) return;
-
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      showEvent(-1);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      showEvent(1);
-    }
-  });
-
-  /* ---------- Touch swipe ---------- */
-
-  let touchStartX = 0;
-  let touchStartY = 0;
-  let touchTracking = false;
-
-  dialog.addEventListener('touchstart', function (event) {
-    if (event.touches.length !== 1) {
-      touchTracking = false;
-      return;
-    }
-
-    touchTracking = true;
-    touchStartX = event.touches[0].clientX;
-    touchStartY = event.touches[0].clientY;
-  }, { passive: true });
-
-  dialog.addEventListener('touchend', function (event) {
-    if (!touchTracking) return;
-
-    touchTracking = false;
-
-    const touch = event.changedTouches[0];
-    const dx = touch.clientX - touchStartX;
-    const dy = touch.clientY - touchStartY;
-
-    // Horizontal swipe only; vertical drags keep scrolling the popup.
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      showEvent(dx < 0 ? 1 : -1);
-    }
-  }, { passive: true });
-
-  /* ---------- Close expanded event ---------- */
-
-  function closeDetails() {
-    if (!activeCard || closing) return;
-
+  function closeCarousel() {
+    if (!dialog.open || closing) return;
     closing = true;
-
-    const current = getComputedStyle(panel);
-
-    const from = {
-      opacity: current.opacity,
-      transform: current.transform
-    };
-
-    if (motion) {
-      motion.cancel();
-    }
 
     if (reducedMotion.matches) {
       dialog.close();
@@ -609,89 +783,90 @@ window.Webflow.push(function () {
 
     dialog.classList.add('is-closing');
 
-    dialog.querySelectorAll('.event-focus-nav').forEach(function (nav) {
-      nav.animate(
-        [{ opacity: 1 }, { opacity: 0 }],
-        { duration: 180, easing: 'ease', fill: 'forwards' }
-      );
-    });
-
-    motion = panel.animate(
+    const motion = swiperEl.animate(
       [
-        from,
-        {
-          opacity: 0,
-          transform: 'translateY(10px) scale(.97)'
-        }
+        { opacity: 1, transform: 'scale(1)' },
+        { opacity: 0, transform: 'scale(.94)' }
       ],
-      {
-        duration: 180,
-        easing: 'cubic-bezier(.4, 0, 1, 1)',
-        fill: 'forwards'
-      }
+      { duration: 200, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' }
     );
 
-    motion.onfinish = function () {
-      dialog.close();
-    };
+    dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
+      el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' });
+    });
+
+    motion.onfinish = function () { dialog.close(); };
   }
 
-  /* ---------- Close button and Escape ---------- */
+  dialog.addEventListener('close', function () {
+    if (swiper) {
+      swiper.destroy(true, true);
+      swiper = null;
+    }
 
-  closeButton.addEventListener('click', closeDetails);
+    // Forget dropdowns that lived in the carousel
+    for (let i = dropdowns.length - 1; i >= 0; i -= 1) {
+      if (dialog.contains(dropdowns[i].wrapper)) dropdowns.splice(i, 1);
+    }
+
+    wrapperEl.innerHTML = '';
+    swiperEl.getAnimations().forEach(function (a) { a.cancel(); });
+    dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
+      el.getAnimations().forEach(function (a) { a.cancel(); });
+    });
+
+    dialog.classList.remove('is-closing', 'is-single');
+    document.body.style.overflow = previousOverflow;
+    closing = false;
+
+    if (returnFocus) returnFocus.focus({ preventScroll: true });
+    returnFocus = null;
+  });
+
+  closeButton.addEventListener('click', closeCarousel);
 
   dialog.addEventListener('cancel', function (event) {
     event.preventDefault();
-    closeDetails();
+    closeCarousel();
   });
 
-  /* ---------- Close on backdrop click ---------- */
-
-  // The dialog fills the screen, so a click on the dialog itself
-  // (not the panel or chevrons) is a click on the backdrop.
+  // Click on the dark background (not on a card or button) closes
   dialog.addEventListener('click', function (event) {
-    if (event.target === dialog) {
-      closeDetails();
+    if (
+      event.target === dialog ||
+      event.target === swiperEl ||
+      event.target === wrapperEl ||
+      event.target.classList.contains('swiper-slide')
+    ) {
+      closeCarousel();
     }
   });
 
-  /* ---------- Restore card and keyboard focus ---------- */
+  /* ==========================================================
+     7. WIRE UP THE PAGE
+     ========================================================== */
 
-  dialog.addEventListener('close', function () {
-    if (motion) {
-      motion.cancel();
-    }
+  function init() {
+    setupDropdowns(document);
 
-    if (slideMotion) {
-      slideMotion.cancel();
-    }
+    document.querySelectorAll('.events .btn-view-event-details').forEach(function (button) {
+      prepareButton(button);
+      button.setAttribute('aria-haspopup', 'dialog');
 
-    dialog.querySelectorAll('.event-focus-nav').forEach(function (nav) {
-      nav.getAnimations().forEach(function (animation) {
-        animation.cancel();
+      button.addEventListener('click', function (event) {
+        event.preventDefault();
+        const card = button.closest('.events-card');
+        if (card) openCarousel(card, button);
       });
     });
 
-    closeCardDropdowns(activeCard);
+    // Warm up Swiper so the first click opens instantly
+    loadSwiper().catch(function () {});
+  }
 
-    const returnFocus = activeButton;
-
-    restoreLabel(activeButton);
-    returnToPage();
-
-    document.body.style.overflow = previousOverflow;
-    dialog.classList.remove('is-closing', 'is-single');
-
-    activeCard = null;
-    activeButton = null;
-    motion = null;
-    slideMotion = null;
-    closing = false;
-    navCards = [];
-    navIndex = 0;
-
-    if (returnFocus) {
-      returnFocus.focus({ preventScroll: true });
-    }
-  });
-});
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
+})();
