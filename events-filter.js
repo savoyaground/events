@@ -26,7 +26,11 @@
 
       return {
         item: item,
-        city: location.split(',')[0].trim(),
+        // "Austin, Texas, United States" -> "Austin, Texas"
+        // "Paris, France" -> "Paris, France"
+        city: /^tbd$/i.test(location)
+          ? ''
+          : location.split(',').slice(0, 2).map(function (part) { return part.trim(); }).join(', '),
         monthKey: valid
           ? start.getFullYear() + '-' + String(start.getMonth() + 1).padStart(2, '0')
           : '',
@@ -153,9 +157,8 @@
       });
 
       if (countEl) {
-        countEl.innerHTML =
-          shown + ' upcoming event' + (shown === 1 ? '' : 's') +
-          ' &nbsp; · &nbsp; Soonest first';
+        countEl.textContent =
+          shown + (shown === 1 ? ' event available' : ' events available');
       }
 
       emptyEl.hidden = shown > 0;
