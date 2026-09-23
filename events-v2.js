@@ -23,6 +23,17 @@
   const GAP = 16;               // px between cards
   const RADIUS = 20;            // px card corner radius
   const CLOSE_LABEL = 'Close event details';
+  const SPEED = 650;            // ms, slide transition
+  const EASE = 'cubic-bezier(.22, 1, .36, 1)'; // shared by the track and the cards
+  // Side cards: slightly see-through, under a flat black overlay,
+  // and the whole row fades out toward the left and right screen edges.
+  const INACTIVE_OPACITY = 0.8; // side card opacity
+  const OVERLAY = 0.75;         // black overlay on side cards (75%)
+  // Depth: side cards sit "behind" the focused one
+  const SIDE_SCALE = 0.9;       // side cards shrink to 90%
+  const SIDE_BLUR = 2;          // px, out-of-focus blur on side cards
+  const SIDE_GRAYSCALE = 0.6;   // colour drains from side cards
+  const PARALLAX = 0.06;        // image drifts inside its card (share of card width)
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -86,10 +97,46 @@
       border-radius: ${RADIUS}px;
       overflow: hidden;
       background: #fff;
-      box-shadow: 0 30px 90px rgba(0, 0, 0, .35);
-      will-change: clip-path, transform;
+      transform-origin: 50% 50%;
+      will-change: clip-path, transform, opacity, filter;
     }
 
+    /* Soft shadow that follows the clipped card shape */
+    .ev2-dialog .swiper-slide { filter: drop-shadow(0 28px 44px rgba(0, 0, 0, .45)); }
+
+    /* Image window for the parallax drift */
+    .ev2-media { position: relative; overflow: hidden; aspect-ratio: 16 / 9; }
+    .ev2-dialog .ev2-media img {
+      display: block; width: 100%; height: 100%;
+      object-fit: cover;
+      scale: 1.15;          /* room for the drift */
+      will-change: translate;
+    }
+
+    /* Flat black overlay on side cards */
+    .ev2-shade {
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, ${OVERLAY});
+      pointer-events: none;
+      opacity: 0;
+      z-index: 2;
+    }
+
+    /* Fade the row out toward the left and right edges of the screen.
+       The focused card (plus a little room for its shadow) stays solid. */
+    .ev2-dialog .swiper {
+      --ev2-solid: calc(var(--ev2-w, 720px) / 2 + 48px);
+      -webkit-mask-image: linear-gradient(to right,
+        transparent 0,
+        #000 calc(50% - var(--ev2-solid)),
+        #000 calc(50% + var(--ev2-solid)),
+        transparent 100%);
+              mask-image: linear-gradient(to right,
+        transparent 0,
+        #000 calc(50% - var(--ev2-solid)),
+        #000 calc(50% + var(--ev2-solid)),
+        transparent 100%);
+    }
     .ev2-scroll {
       height: 100%;
       max-height: inherit;
@@ -123,8 +170,9 @@
       overflow: visible !important;
     }
 
-    /* Text fades as a card collapses into a slice */
-    .ev2-fade { transition: opacity 200ms ease; }
+    /* Track and cards must share one easing, or the cards "pull back" mid-slide */
+    .ev2-dialog { --swiper-wrapper-transition-timing-function: ${EASE}; }
+    .ev2-dialog .swiper-wrapper { transition-timing-function: ${EASE}; }
 
     .ev2-dialog .ev2-frame .btn-view-event-details::after {
       content: "×";
@@ -189,7 +237,7 @@
     @media (prefers-reduced-motion: reduce) {
       .ev2-dialog::backdrop,
       .ev2-dialog.is-closing::backdrop { animation: none; }
-      .ev2-close, .ev2-nav, .ev2-fade { transition: none; }
+      .ev2-close, .ev2-nav { transition: none; }
     }
   `;
 
@@ -461,8 +509,14 @@
     // Distance between two collapsed neighbours
     const nextStep = r * W + S;
 
-    slides.forEach(function (slide) {
-      const p = slide.progress;
+    // Our own progress: 0 = centered, +1 = one card to the left, -1 = one to the right.
+    // (Swiper's slide.progress drifts a few % with auto-width slides + spaceBetween,
+    //  which left the focused card slightly clipped and shaded.)
+    const grid = swiper.slidesGrid;
+    const step = W + S;
+
+    slides.forEach(function (slide, index) {
+      const p = grid[index] === undefined ? slide.progress : (-swiper.translate - grid[index]) / step;
       const d = Math.abs(p);
       const sign = p === 0 ? 0 : p > 0 ? -1 : 1; // negative progress = to the right
 
@@ -478,12 +532,29 @@
 
       frame.style.clipPath =
         'inset(0 ' + clip.toFixed(2) + 'px 0 ' + clip.toFixed(2) + 'px round ' + RADIUS + 'px)';
-      frame.style.transform = 'translate3d(' + shift.toFixed(2) + 'px, 0, 0)';
+      // 0 = focused, 1 = fully a side card
+      const amount = Math.min(d, 1);
+      const scale = 1 - (1 - SIDE_SCALE) * amount;
 
-      const fade = String(Math.max(0, 1 - d * 1.6));
-      frame.querySelectorAll('.ev2-fade').forEach(function (el) {
-        el.style.opacity = fade;
-      });
+      frame.style.transform =
+        'translate3d(' + shift.toFixed(2) + 'px, 0, 0) scale(' + scale.toFixed(4) + ')';
+
+      // Side cards: fade, drain colour, soften focus, darken under the overlay
+      frame.style.opacity = String(1 - (1 - INACTIVE_OPACITY) * amount);
+      frame.style.filter = amount < 0.001
+        ? 'none'
+        : 'blur(' + (SIDE_BLUR * amount).toFixed(2) + 'px) grayscale(' + (SIDE_GRAYSCALE * amount).toFixed(3) + ')';
+
+      const shade = frame.querySelector('.ev2-shade');
+      if (shade) shade.style.opacity = String(amount);
+
+      // Parallax: the photo drifts the other way as the card travels
+      const img = frame.querySelector('.ev2-media img');
+      if (img) {
+        const drift = Math.max(-1, Math.min(1, p)) * W * PARALLAX;
+        // "translate" (not "transform"): the photo's reveal-up class forces transform: none
+        img.style.translate = drift.toFixed(2) + 'px 0';
+      }
 
       slide.style.zIndex = String(100 - Math.round(d * 10));
     });
@@ -493,9 +564,23 @@
     swiper.slides.forEach(function (slide) {
       const frame = slide.querySelector('.ev2-frame');
       if (!frame) return;
-      frame.style.transitionProperty = 'clip-path, transform';
+      frame.style.transitionProperty = 'clip-path, transform, opacity, filter';
       frame.style.transitionDuration = duration + 'ms';
-      frame.style.transitionTimingFunction = 'cubic-bezier(.22, 1, .36, 1)';
+      frame.style.transitionTimingFunction = EASE;
+
+      const shade = frame.querySelector('.ev2-shade');
+      if (shade) {
+        shade.style.transitionProperty = 'opacity';
+        shade.style.transitionDuration = duration + 'ms';
+        shade.style.transitionTimingFunction = EASE;
+      }
+
+      const img = frame.querySelector('.ev2-media img');
+      if (img) {
+        img.style.transitionProperty = 'translate';
+        img.style.transitionDuration = duration + 'ms';
+        img.style.transitionTimingFunction = EASE;
+      }
     });
   }
 
@@ -545,10 +630,6 @@
     clone.querySelectorAll('.calendar-toggle-icon').forEach(function (el) { el.remove(); });
     clone.removeAttribute('style');
 
-    ['.event-card-body', '.events-footer'].forEach(function (selector) {
-      clone.querySelectorAll(selector).forEach(function (el) { el.classList.add('ev2-fade'); });
-    });
-
     const details = clone.querySelector('.btn-view-event-details');
     if (details) {
       details.textContent = CLOSE_LABEL;
@@ -571,8 +652,22 @@
     const scroll = document.createElement('div');
     scroll.className = 'ev2-scroll';
 
+    const shade = document.createElement('div');
+    shade.className = 'ev2-shade';
+    shade.setAttribute('aria-hidden', 'true');
+
+    // Wrap the photo so it can drift inside a fixed window
+    const photo = clone.querySelector('.events-img');
+    if (photo) {
+      const media = document.createElement('div');
+      media.className = 'ev2-media';
+      photo.parentNode.insertBefore(media, photo);
+      media.appendChild(photo);
+    }
+
     scroll.appendChild(clone);
     frame.appendChild(scroll);
+    frame.appendChild(shade);
     slide.appendChild(frame);
 
     setupDropdowns(clone);
@@ -612,7 +707,7 @@
       centeredSlides: true,
       spaceBetween: GAP,
       initialSlide: startIndex,
-      speed: reducedMotion.matches ? 0 : 550,
+      speed: reducedMotion.matches ? 0 : SPEED,
       grabCursor: true,
       watchSlidesProgress: true,
       slideToClickedSlide: true,
@@ -626,9 +721,10 @@
         beforeResize: sizeSlides,
         resize: applyMaterial,
         setTransition: setMaterialTransition,
-        slideChange: function () {
+        slideChange: function (s) {
           closeAllDropdowns();
           dialog.querySelectorAll('.ev2-scroll').forEach(function (el) { el.scrollTop = 0; });
+          revealContent(s.slides[s.activeIndex], 180);
         }
       }
     });
@@ -648,7 +744,29 @@
       dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
         el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease' });
       });
+
+      revealContent(swiper.slides[swiper.activeIndex], 220);
     }
+  }
+
+  // The focused card's text rises in, one line after another
+  function revealContent(slide, delay) {
+    if (!slide || reducedMotion.matches) return;
+
+    const parts = slide.querySelectorAll(
+      '.events-card-heading > *, .event-details, .events-footer'
+    );
+
+    parts.forEach(function (el, i) {
+      el.getAnimations().forEach(function (a) { a.cancel(); });
+      el.animate(
+        [
+          { opacity: 0, transform: 'translateY(14px)' },
+          { opacity: 1, transform: 'translateY(0)' }
+        ],
+        { duration: 600, delay: delay + i * 70, easing: EASE, fill: 'backwards' }
+      );
+    });
   }
 
   function closeCarousel() {
