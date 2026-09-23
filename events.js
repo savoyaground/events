@@ -34,6 +34,7 @@
   const SIDE_BLUR = 2;          // px, out-of-focus blur on side cards
   const SIDE_GRAYSCALE = 0.6;   // colour drains from side cards
   const PARALLAX = 0.06;        // image drifts inside its card (share of card width)
+  const KEN_BURNS_MS = 14000;   // one slow zoom + pan on the focused photo (then it reverses)
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -728,6 +729,7 @@
           closeAllDropdowns();
           dialog.querySelectorAll('.ev2-scroll').forEach(function (el) { el.scrollTop = 0; });
           revealContent(s.slides[s.activeIndex], 180);
+          kenBurns(s);
         }
       }
     });
@@ -750,6 +752,40 @@
 
       revealContent(swiper.slides[swiper.activeIndex], 220);
     }
+
+    kenBurns(swiper);
+  }
+
+  // Ken Burns: the focused photo slowly zooms and pans.
+  // Side cards pause where they are, so nothing jumps when a card leaves focus.
+  function kenBurns(swiper) {
+    if (reducedMotion.matches) return;
+
+    swiper.slides.forEach(function (slide, index) {
+      const img = slide.querySelector('.ev2-media img');
+      if (!img) return;
+
+      if (index === swiper.activeIndex) {
+        if (!img.ev2KenBurns) {
+          // Uses "scale" + transform-origin, so it layers on top of the parallax "translate"
+          img.ev2KenBurns = img.animate(
+            [
+              { scale: 1.15, transformOrigin: '35% 55%' },
+              { scale: 1.3, transformOrigin: '65% 40%' }
+            ],
+            {
+              duration: KEN_BURNS_MS,
+              easing: 'ease-in-out',
+              direction: 'alternate',
+              iterations: Infinity
+            }
+          );
+        }
+        img.ev2KenBurns.play();
+      } else if (img.ev2KenBurns) {
+        img.ev2KenBurns.pause();
+      }
+    });
   }
 
   // The focused card's text rises in, one line after another
