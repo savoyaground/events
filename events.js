@@ -37,6 +37,31 @@
     const KEN_BURNS_MS = 14000;   // one slow zoom + pan on the focused photo (then it reverses)
   
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    /* Pixel icons: drawn on a 10 x 10 grid, one square per "pixel".
+       At 40px each pixel is exactly 4px, so the edges stay crisp. */
+    const PIXEL_ICONS = {
+      // one-pixel diagonal chevron, doubled at the tip so it stays symmetrical
+      next:  [[3,1],[4,2],[5,3],[6,4],[6,5],[5,6],[4,7],[3,8]],
+      prev:  [[6,1],[5,2],[4,3],[3,4],[3,5],[4,6],[5,7],[6,8]],
+      // x: two diagonals that meet in a 2 x 2 center
+      close: [[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],
+              [8,1],[7,2],[6,3],[5,4],[4,5],[3,6],[2,7],[1,8]]
+    };
+
+    function pixelSvg(name, size) {
+      const rects = PIXEL_ICONS[name].map(function (c) {
+        return '<rect x="' + c[0] + '" y="' + c[1] + '" width="1" height="1"/>';
+      }).join('');
+      return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="' + size + '" height="' + size + '" ' +
+        'fill="currentColor" shape-rendering="crispEdges" aria-hidden="true">' + rects + '</svg>'
+      );
+    }
+
+    // Same x as a CSS mask, for the "Close Event Description" button (takes the text colour)
+    const PIXEL_X_MASK = 'url("data:image/svg+xml,' +
+      encodeURIComponent(pixelSvg('close', 10).replace('currentColor', '#000')) + '")';
   
     /* ==========================================================
        1. STYLES (carousel only — card styles stay in events.css)
@@ -176,56 +201,59 @@
       .ev2-dialog .swiper-wrapper { transition-timing-function: ${EASE}; }
   
       .ev2-dialog .ev2-frame .btn-view-event-details::after {
-        content: "×";
-        font-size: 1.25em;
-        line-height: 1;
+        content: "";
+        display: inline-block;
+        flex: none;
+        width: 1em;
+        height: 1em;
+        margin-left: .5em;
+        vertical-align: -.125em;
+        background: currentColor;
+        -webkit-mask: ${PIXEL_X_MASK} center / contain no-repeat;
+                mask: ${PIXEL_X_MASK} center / contain no-repeat;
       }
   
       /* Collapsed neighbours: whole slice is a "go to" target */
       .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-frame { cursor: pointer; }
       .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-scroll { pointer-events: none; }
   
-      /* Close + chevrons */
+      /* Close + chevrons: bare white pixel icons, no circle behind them */
       .ev2-close,
       .ev2-nav {
         position: fixed;
         z-index: 20;
         display: grid;
         place-items: center;
+        width: 56px;
+        height: 56px;
         padding: 0;
         border: 0;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, .92);
-        color: #222;
+        border-radius: 4px;
+        background: none;
+        color: #fff;
         cursor: pointer;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, .15);
-        transition: background-color 180ms ease, transform 180ms ease, opacity 180ms ease;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .45));
+        transition: transform 240ms ${EASE}, opacity 180ms ease;
       }
-      .ev2-close {
-        top: 20px; right: 20px;
-        width: 44px; height: 44px;
-        font: 28px/1 system-ui, sans-serif;
-      }
-      .ev2-nav {
-        top: 50%;
-        width: 48px; height: 48px;
-        margin-top: -24px;
-      }
-      .ev2-nav svg { width: 22px; height: 22px; pointer-events: none; }
+      .ev2-close svg,
+      .ev2-nav svg { display: block; width: 40px; height: 40px; pointer-events: none; }
+      .ev2-close { top: 16px; right: 16px; }
+      .ev2-nav { top: 50%; margin-top: -28px; }
       .ev2-prev { left: 8.33%; }
       .ev2-next { right: 8.33%; }
-      .ev2-nav.swiper-button-disabled { opacity: .35; cursor: default; }
-  
+      .ev2-nav.swiper-button-disabled { opacity: .3; cursor: default; }
+
+      /* Hover: chevrons step one pixel (4px) the way they point; the x steps up */
       @media (hover: hover) {
-        .ev2-close:hover,
-        .ev2-nav:not(.swiper-button-disabled):hover {
-          background: #e4e4e4;
-          transform: scale(1.06);
-        }
+        .ev2-prev:not(.swiper-button-disabled):hover { transform: translateX(-4px); }
+        .ev2-next:not(.swiper-button-disabled):hover { transform: translateX(4px); }
+        .ev2-close:hover { transform: scale(1.1); }
       }
+      .ev2-nav:active:not(.swiper-button-disabled),
+      .ev2-close:active { opacity: .7; }
       .ev2-close:focus-visible,
-      .ev2-nav:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-  
+      .ev2-nav:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
       @media (max-width: 991px) {
         .ev2-nav { display: none; }
       }
@@ -592,21 +620,13 @@
        6. THE CAROUSEL DIALOG
        ========================================================== */
   
-    const chevron = function (path) {
-      return (
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
-        'aria-hidden="true"><path d="' + path + '"/></svg>'
-      );
-    };
-  
     const dialog = document.createElement('dialog');
     dialog.className = 'ev2-dialog';
     dialog.setAttribute('aria-label', 'Event details');
     dialog.innerHTML = `
-      <button class="ev2-close" type="button" aria-label="${CLOSE_LABEL}">×</button>
-      <button class="ev2-nav ev2-prev" type="button" aria-label="Previous event">${chevron('M15 18l-6-6 6-6')}</button>
-      <button class="ev2-nav ev2-next" type="button" aria-label="Next event">${chevron('M9 18l6-6-6-6')}</button>
+      <button class="ev2-close" type="button" aria-label="${CLOSE_LABEL}">${pixelSvg('close', 40)}</button>
+      <button class="ev2-nav ev2-prev" type="button" aria-label="Previous event">${pixelSvg('prev', 40)}</button>
+      <button class="ev2-nav ev2-next" type="button" aria-label="Next event">${pixelSvg('next', 40)}</button>
       <div class="swiper"><div class="swiper-wrapper"></div></div>
     `;
     document.body.appendChild(dialog);
