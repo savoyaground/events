@@ -22,7 +22,7 @@
     const COLLAPSED_RATIO_MOBILE = 0.12;
     const GAP = 8;                // px between cards
     const RADIUS = 20;            // px card corner radius
-    const CLOSE_LABEL = 'Close event details';
+    const CLOSE_LABEL = 'Close Event Description';
     const SPEED = 650;            // ms, slide transition
     const EASE = 'cubic-bezier(.22, 1, .36, 1)'; // shared by the track and the cards
     // Side cards: slightly see-through, under a flat black overlay,
@@ -650,6 +650,7 @@
   
       const slide = document.createElement('div');
       slide.className = 'swiper-slide';
+      slide.ev2Source = card; // the page card this slide was cloned from
   
       const frame = document.createElement('div');
       frame.className = 'ev2-frame';
@@ -687,9 +688,14 @@
   
       closeAllDropdowns();
   
-      // Every event currently visible on the page (respects search/filters)
+      // Every event that matches the search/filters, on every page
+      // (events-filter.js hides other pages with .ev-off-page)
       const cards = Array.from(document.querySelectorAll('.events .w-dyn-item .events-card'))
-        .filter(function (item) { return item.getClientRects().length > 0; });
+        .filter(function (item) {
+          const li = item.closest('.w-dyn-item');
+          if (li && li.classList.contains('ev-off-page')) return li.style.display !== 'none';
+          return item.getClientRects().length > 0;
+        });
   
       const startIndex = Math.max(cards.indexOf(card), 0);
   
@@ -836,6 +842,22 @@
     }
   
     dialog.addEventListener('close', function () {
+      // The card the visitor ended on: bring its page into view and return focus to it
+      const activeSlide = swiper && swiper.slides[swiper.activeIndex];
+      const endCard = activeSlide && activeSlide.ev2Source;
+      let scrollToEnd = false;
+
+      if (endCard) {
+        document.dispatchEvent(new CustomEvent('savoya:events-reveal', {
+          detail: { item: endCard.closest('.w-dyn-item') }
+        }));
+        const endButton = endCard.querySelector('.btn-view-event-details');
+        if (endButton && endButton !== returnFocus) {
+          returnFocus = endButton;
+          scrollToEnd = true;
+        }
+      }
+
       if (swiper) {
         swiper.destroy(true, true);
         swiper = null;
@@ -857,6 +879,7 @@
       closing = false;
   
       if (returnFocus) returnFocus.focus({ preventScroll: true });
+      if (scrollToEnd && endCard) endCard.scrollIntoView({ block: 'center' });
       returnFocus = null;
     });
   
