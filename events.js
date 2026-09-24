@@ -962,6 +962,21 @@
         '.events .w-dyn-item .events-img.ev-img-wait { clip-path: inset(100% 0 0 0) !important; }';
       document.head.appendChild(waitStyle);
   
+      // Chrome (153+) won't start a lazy image while a clip-path hides it
+      // completely, and the mask only opens once the photo has loaded, so neither
+      // happens. This observer ignores clip-path: when a card comes near the
+      // screen, its photo loads right away.
+      const nearScreen = 'IntersectionObserver' in window
+        ? new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting) return;
+              const img = entry.target.querySelector('.events-img');
+              if (img) img.loading = 'eager';
+              nearScreen.unobserve(entry.target);
+            });
+          }, { rootMargin: '400px 0px' })
+        : null;
+
       document.querySelectorAll('.events .w-dyn-item .events-img').forEach(function (img) {
         // Webflow sets sizes="100vw", which downloads a full-screen-width photo
         // for a card a third of the screen wide. Ask for a card-sized one instead.
@@ -971,6 +986,10 @@
         if (img.complete && img.naturalWidth > 0) return;
   
         img.classList.add('ev-img-wait');
+
+        const card = img.closest('.events-card') || img;
+        if (nearScreen) nearScreen.observe(card);
+        else img.loading = 'eager';
   
         const release = function () { img.classList.remove('ev-img-wait'); };
   
