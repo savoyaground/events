@@ -517,6 +517,19 @@
       return window.innerWidth < 768 ? COLLAPSED_RATIO_MOBILE : COLLAPSED_RATIO;
     }
   
+    /* The page cards ask for card-sized photos (see prepareCardImages).
+       In the carousel the photo is much wider and the Ken Burns zooms in
+       further, so the cloned photos ask for a large enough file again. */
+    function sizeCarouselImages() {
+      const cardWidth = parseFloat(dialog.style.getPropertyValue('--ev2-w')) || MAX_WIDTH;
+      const needed = Math.ceil(cardWidth * 1.3); // 1.3 = deepest Ken Burns zoom
+  
+      wrapperEl.querySelectorAll('.ev2-media img').forEach(function (img) {
+        img.loading = 'eager';
+        img.sizes = needed + 'px';
+      });
+    }
+  
     function sizeSlides() {
       const r = currentRatio();
       const room = (window.innerWidth - 32 - GAP * 2) / (1 + r);
@@ -739,6 +752,7 @@
       closeButton.focus({ preventScroll: true });
   
       sizeSlides();
+      sizeCarouselImages();
   
       swiper = new Swiper(swiperEl, {
         slidesPerView: 'auto',
@@ -756,7 +770,7 @@
           init: applyMaterial,
           progress: applyMaterial,
           setTranslate: applyMaterial,
-          beforeResize: sizeSlides,
+          beforeResize: function () { sizeSlides(); sizeCarouselImages(); },
           resize: applyMaterial,
           setTransition: setMaterialTransition,
           slideChange: function (s) {
