@@ -38,15 +38,22 @@
   
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-    /* Pixel icons: drawn on a 10 x 10 grid, one square per "pixel".
-       At 40px each pixel is exactly 4px, so the edges stay crisp. */
+    /* Pixel icons: drawn on a 20 x 20 grid, one square per "pixel".
+       At 40px each pixel is exactly 2px, so the lines stay thin and crisp. */
+    const PIXEL_GRID = 20;
+
+    function diagonal(x, y, dx, dy, length) {
+      const cells = [];
+      for (let i = 0; i < length; i += 1) cells.push([x + dx * i, y + dy * i]);
+      return cells;
+    }
+
     const PIXEL_ICONS = {
       // one-pixel diagonal chevron, doubled at the tip so it stays symmetrical
-      next:  [[3,1],[4,2],[5,3],[6,4],[6,5],[5,6],[4,7],[3,8]],
-      prev:  [[6,1],[5,2],[4,3],[3,4],[3,5],[4,6],[5,7],[6,8]],
+      next:  diagonal(6, 2, 1, 1, 8).concat(diagonal(13, 10, -1, 1, 8)),
+      prev:  diagonal(13, 2, -1, 1, 8).concat(diagonal(6, 10, 1, 1, 8)),
       // x: two diagonals that meet in a 2 x 2 center
-      close: [[1,1],[2,2],[3,3],[4,4],[5,5],[6,6],[7,7],[8,8],
-              [8,1],[7,2],[6,3],[5,4],[4,5],[3,6],[2,7],[1,8]]
+      close: diagonal(2, 2, 1, 1, 16).concat(diagonal(17, 2, -1, 1, 16))
     };
 
     function pixelSvg(name, size) {
@@ -54,7 +61,7 @@
         return '<rect x="' + c[0] + '" y="' + c[1] + '" width="1" height="1"/>';
       }).join('');
       return (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="' + size + '" height="' + size + '" ' +
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + PIXEL_GRID + ' ' + PIXEL_GRID + '" width="' + size + '" height="' + size + '" ' +
         'fill="currentColor" shape-rendering="crispEdges" aria-hidden="true">' + rects + '</svg>'
       );
     }
@@ -243,7 +250,7 @@
       .ev2-next { right: 8.33%; }
       .ev2-nav.swiper-button-disabled { opacity: .3; cursor: default; }
 
-      /* Hover: chevrons step one pixel (4px) the way they point; the x steps up */
+      /* Hover: chevrons step two pixels (4px) the way they point; the x steps up */
       @media (hover: hover) {
         .ev2-prev:not(.swiper-button-disabled):hover { transform: translateX(-4px); }
         .ev2-next:not(.swiper-button-disabled):hover { transform: translateX(4px); }
