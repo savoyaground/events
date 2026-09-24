@@ -34,7 +34,7 @@
     const SIDE_BLUR = 2;          // px, out-of-focus blur on side cards
     const SIDE_GRAYSCALE = 0.6;   // colour drains from side cards
     const PARALLAX = 0.06;        // image drifts inside its card (share of card width)
-    const KEN_BURNS_MS = 14000;   // one slow zoom + pan on the focused photo (then it reverses)
+    const KEN_BURNS_MS = 10000;   // one zoom + pan on the focused photo (then it reverses)
   
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
