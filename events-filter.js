@@ -16,7 +16,8 @@
     const style = document.createElement('style');
     style.id = 'events-pager-styles';
     style.textContent = `
-      .events-collection-list .w-dyn-item.ev-off-page { display: none !important; }
+      .events-collection-list .w-dyn-item.ev-off-page,
+      .events-collection-list .w-dyn-item.ev-past { display: none !important; }
 
       .events-pager {
         display: flex;
@@ -140,21 +141,45 @@
 
     /* ---------- Read each event from its card ---------- */
 
-    const events = items.map(function (item) {
+    // The page starts at the 1st of the current month (visitor's local time).
+    // Events that ended before then are hidden, and the Month filter starts here.
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    function cardDates(card) {
+      return Array.from(card.querySelectorAll('.events-card-dates'))
+        .filter(function (el) { return !el.classList.contains('w-dyn-bind-empty'); })
+        .map(function (el) { return new Date(text(el)); })
+        .filter(function (date) { return !isNaN(date); });
+    }
+
+    const events = [];
+
+    items.forEach(function (item) {
       const card = item.querySelector('.events-card') || item;
       const location = text(card.querySelector('.events-card-location'));
-      const firstDate = text(card.querySelector('.events-card-dates'));
-      const start = new Date(firstDate);
-      const valid = !isNaN(start);
+      const dates = cardDates(card);
+      const start = dates[0];
+      const end = dates.length ? dates[dates.length - 1] : null;
+      const valid = !!start;
 
-      return {
+      // Already over before this month began: leave it off the page
+      if (end && end < monthStart) {
+        item.classList.add('ev-past');
+        return;
+      }
+
+      // An event that began last month but runs into this one files under this month
+      const monthDate = valid && start < monthStart ? monthStart : start;
+
+      events.push({
         item: item,
         city: cityLabel(location),
         monthKey: valid
-          ? start.getFullYear() + '-' + String(start.getMonth() + 1).padStart(2, '0')
+          ? monthDate.getFullYear() + '-' + String(monthDate.getMonth() + 1).padStart(2, '0')
           : '',
         monthLabel: valid
-          ? start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          ? monthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
           : '',
         time: valid ? start.getTime() : Infinity,
         haystack: (
@@ -162,7 +187,7 @@
           location + ' ' +
           text(card.querySelector('.event-details'))
         ).toLowerCase()
-      };
+      });
     });
 
     /* ---------- Soonest first ---------- */
