@@ -16,8 +16,7 @@
     const style = document.createElement('style');
     style.id = 'events-pager-styles';
     style.textContent = `
-      .events-collection-list .w-dyn-item.ev-off-page,
-      .events-collection-list .w-dyn-item.ev-past { display: none !important; }
+      .events-collection-list .w-dyn-item.ev-off-page { display: none !important; }
 
       .events-pager {
         display: flex;
@@ -141,8 +140,9 @@
 
     /* ---------- Read each event from its card ---------- */
 
-    // The page starts at the 1st of the current month (visitor's local time).
-    // Events that ended before then are hidden, and the Month filter starts here.
+    // The grid starts at the current month (visitor's local time):
+    // this month's and upcoming events come first, soonest first,
+    // then earlier events, most recent first. Nothing is hidden.
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -163,16 +163,14 @@
       const end = dates.length ? dates[dates.length - 1] : null;
       const valid = !!start;
 
-      // Already over before this month began: leave it off the page
-      if (end && end < monthStart) {
-        item.classList.add('ev-past');
-        return;
-      }
+      // Ended before this month began
+      const past = !!(end && end < monthStart);
 
       // An event that began last month but runs into this one files under this month
-      const monthDate = valid && start < monthStart ? monthStart : start;
+      const monthDate = valid && !past && start < monthStart ? monthStart : start;
 
       events.push({
+        past: past,
         item: item,
         city: cityLabel(location),
         monthKey: valid
@@ -190,9 +188,12 @@
       });
     });
 
-    /* ---------- Soonest first ---------- */
+    /* ---------- Current month first, then upcoming, then past ---------- */
 
-    events.sort(function (a, b) { return a.time - b.time; });
+    events.sort(function (a, b) {
+      if (a.past !== b.past) return a.past ? 1 : -1;      // current month and later first
+      return a.past ? b.time - a.time : a.time - b.time;  // past: most recent first
+    });
 
     const listParent = items[0].parentElement;
     events.forEach(function (event) { listParent.appendChild(event.item); });
