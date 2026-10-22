@@ -61,6 +61,14 @@
         }
       }
       .events-pager-arrow:disabled { opacity: .3; cursor: default; }
+      .events-pager-arrow.is-month {
+        display: inline-flex;
+        gap: 6px;
+        padding: 0 16px 0 10px;
+        white-space: nowrap;
+      }
+      .events-pager-arrow.is-month[data-dir="1"] { padding: 0 10px 0 16px; }
+      .events-pager-pages[hidden] { display: none; }
       .events-pager-arrow:focus-visible,
       .events-pager-page:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
 
@@ -140,11 +148,18 @@
 
     /* ---------- Read each event from its card ---------- */
 
-    // The grid starts at the current month (visitor's local time):
-    // this month's and upcoming events come first, soonest first,
-    // then earlier events, most recent first. Nothing is hidden.
+    // Each event files under the month it starts in (visitor's local time).
+    // The page opens on the current month; the pager's end buttons step to
+    // the month before or after. Inside a month, events that haven't ended
+    // come first (soonest first), then finished ones. Nothing is hidden.
     const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    function monthKeyOf(date) {
+      return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0');
+    }
+    const currentMonthKey = monthKeyOf(now);
 
     function cardDates(card) {
       return Array.from(card.querySelectorAll('.events-card-dates'))
@@ -163,19 +178,17 @@
       const end = dates.length ? dates[dates.length - 1] : null;
       const valid = !!start;
 
-      // Ended before this month began
-      const past = !!(end && end < monthStart);
+      // Finished = its last day is before today
+      const past = !!(end && end < today);
 
-      // An event that began last month but runs into this one files under this month
+      // An event that began in an earlier month and is still running files under this month
       const monthDate = valid && !past && start < monthStart ? monthStart : start;
 
       events.push({
         past: past,
         item: item,
         city: cityLabel(location),
-        monthKey: valid
-          ? monthDate.getFullYear() + '-' + String(monthDate.getMonth() + 1).padStart(2, '0')
-          : '',
+        monthKey: valid ? monthKeyOf(monthDate) : '',
         monthLabel: valid
           ? monthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
           : '',
@@ -230,8 +243,19 @@
       }
     });
 
+    months.sort(function (a, b) { return a.value < b.value ? -1 : a.value > b.value ? 1 : 0; });
+
     fillSelect(citySelect, cities);
     fillSelect(monthSelect, months);
+
+    // Open on this month; if it has no events, the next month that does
+    // (or the latest one, if every event is in the past)
+    const defaultMonth = (function () {
+      if (!months.length) return '';
+      const ahead = months.find(function (m) { return m.value >= currentMonthKey; });
+      return (ahead || months[months.length - 1]).value;
+    })();
+    if (monthSelect) monthSelect.value = defaultMonth;
 
     /* ---------- Count, empty state, active tags ---------- */
 
@@ -333,8 +357,48 @@
       renderPager();
     }
 
+    // Months that have events for the current search and city, in order
+    let monthsWithMatches = [];
+    let stepPrevMonth = '';   // set when the left arrow steps to the previous month
+    let stepNextMonth = '';   // set when the right arrow steps to the next month
+
+    function neighbourMonths() {
+      const month = monthSelect ? monthSelect.value : '';
+      if (!month) return { prev: '', next: '' };
+      const before = monthsWithMatches.filter(function (m) { return m < month; });
+      const after = monthsWithMatches.filter(function (m) { return m > month; });
+      return { prev: before[before.length - 1] || '', next: after[0] || '' };
+    }
+
+    function monthName(key) {
+      const m = months.find(function (entry) { return entry.value === key; });
+      return m ? m.label : key;
+    }
+
+    const PREV_ICON = pagerChevron('M15 18l-6-6 6-6');
+    const NEXT_ICON = pagerChevron('M9 18l6-6-6-6');
+
+    function setArrow(btn, monthKey, isPrev) {
+      if (monthKey) {
+        btn.classList.add('is-month');
+        btn.innerHTML = isPrev
+          ? PREV_ICON + '<span>Last month</span>'
+          : '<span>Next month</span>' + NEXT_ICON;
+        btn.setAttribute('aria-label', (isPrev ? 'Last month: ' : 'Next month: ') + monthName(monthKey));
+      } else {
+        btn.classList.remove('is-month');
+        btn.innerHTML = isPrev ? PREV_ICON : NEXT_ICON;
+        btn.setAttribute('aria-label', isPrev ? 'Previous page' : 'Next page');
+      }
+    }
+
     function renderPager() {
-      pager.hidden = pageCount < 2;
+      const nb = neighbourMonths();
+      stepPrevMonth = page === 0 ? nb.prev : '';
+      stepNextMonth = page >= pageCount - 1 ? nb.next : '';
+
+      pager.hidden = pageCount < 2 && !nb.prev && !nb.next;
+      pagesEl.hidden = pageCount < 2;
       pagesEl.innerHTML = '';
 
       for (let i = 0; i < pageCount; i += 1) {
@@ -348,8 +412,10 @@
         pagesEl.appendChild(btn);
       }
 
-      prevPage.disabled = page === 0;
-      nextPage.disabled = page >= pageCount - 1;
+      setArrow(prevPage, stepPrevMonth, true);
+      setArrow(nextPage, stepNextMonth, false);
+      prevPage.disabled = page === 0 && !stepPrevMonth;
+      nextPage.disabled = page >= pageCount - 1 && !stepNextMonth;
     }
 
     // Cards on a newly shown page skip the scroll fade-in; the slide is their entrance
@@ -368,11 +434,27 @@
       index = Math.max(0, Math.min(index, pageCount - 1));
       if (index === page) return;
 
-      const dir = index > page ? 1 : -1;
+      slide(index > page ? 1 : -1, function () {
+        settleCards(index);
+        showPage(index);
+      }, options);
+    }
+
+    // Step to the month before (dir -1, lands on its last page) or after (dir 1, first page)
+    function goToMonth(key, dir) {
+      if (!monthSelect || !key) return;
+      slide(dir, function () {
+        monthSelect.value = key;
+        apply({ lastPage: dir < 0 });
+        settleCards(page);
+      });
+    }
+
+    // Slide the grid out, swap what it shows, slide it back in
+    function slide(dir, swap, options) {
       const animate = !(options && options.instant) && !reducedMotion.matches;
 
       if (paging) paging.cancel();
-      settleCards(index);
 
       // Keep the top of the grid in view when the new page is shorter
       function keepInView() {
@@ -383,7 +465,7 @@
       }
 
       if (!animate) {
-        showPage(index);
+        swap();
         keepInView();
         return;
       }
@@ -399,7 +481,7 @@
 
       out.onfinish = function () {
         if (paging !== out) return;
-        showPage(index);
+        swap();
         keepInView();
 
         const inn = grid.animate(
@@ -426,13 +508,22 @@
       showPage(resetPage ? 0 : Math.floor(firstShown / pageSize));
     }
 
-    prevPage.addEventListener('click', function () { goToPage(page - 1); });
-    nextPage.addEventListener('click', function () { goToPage(page + 1); });
+    function stepBack() {
+      if (stepPrevMonth) goToMonth(stepPrevMonth, -1);
+      else goToPage(page - 1);
+    }
+    function stepForward() {
+      if (stepNextMonth) goToMonth(stepNextMonth, 1);
+      else goToPage(page + 1);
+    }
+
+    prevPage.addEventListener('click', stepBack);
+    nextPage.addEventListener('click', stepForward);
 
     // Touch swipe on the grid
     let touchStart = null;
     grid.addEventListener('touchstart', function (event) {
-      if (pageCount < 2 || event.touches.length !== 1) return;
+      if (pager.hidden || event.touches.length !== 1) return;
       touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
     }, { passive: true });
     grid.addEventListener('touchend', function (event) {
@@ -442,7 +533,8 @@
       const dy = t.clientY - touchStart.y;
       touchStart = null;
       if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        goToPage(page + (dx < 0 ? 1 : -1));
+        if (dx < 0) stepForward();
+        else stepBack();
       }
     }, { passive: true });
 
@@ -473,24 +565,29 @@
 
     /* ---------- Apply filters ---------- */
 
-    function apply() {
+    function apply(options) {
       const query = search ? search.value.trim().toLowerCase() : '';
       const city = citySelect ? citySelect.value : '';
       const month = monthSelect ? monthSelect.value : '';
+      const monthSet = {};
       matches = [];
 
       events.forEach(function (e) {
-        const match =
+        const others =
           (!query || e.haystack.includes(query)) &&
-          (!city || e.city === city) &&
-          (!month || e.monthKey === month);
+          (!city || e.city === city);
+        const match = others && (!month || e.monthKey === month);
 
+        if (others && e.monthKey) monthSet[e.monthKey] = true;
         e.item.style.display = match ? '' : 'none';
         if (match) matches.push(e);
       });
 
+      monthsWithMatches = Object.keys(monthSet).sort();
+
       const shown = matches.length;
       paginate(true);
+      if (options && options.lastPage && pageCount > 1) showPage(pageCount - 1);
 
       if (countEl) {
         countEl.textContent =
@@ -515,10 +612,11 @@
         });
       }
 
-      if (month) {
+      // The month the page opens on isn't a filter the visitor chose, so it gets no tag
+      if (month && month !== defaultMonth) {
         active.push({
           label: monthSelect.options[monthSelect.selectedIndex].text,
-          clear: function () { monthSelect.value = ''; }
+          clear: function () { monthSelect.value = defaultMonth; }
         });
       }
 
@@ -554,7 +652,7 @@
         event.preventDefault();
         if (search) search.value = '';
         if (citySelect) citySelect.value = '';
-        if (monthSelect) monthSelect.value = '';
+        if (monthSelect) monthSelect.value = defaultMonth;
         apply();
       });
     });
