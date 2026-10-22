@@ -149,9 +149,9 @@
     /* ---------- Read each event from its card ---------- */
 
     // Each event files under the month it starts in (visitor's local time).
-    // The page opens on the current month; the pager's end buttons step to
-    // the month before or after. Inside a month, events that haven't ended
-    // come first (soonest first), then finished ones. Nothing is hidden.
+    // The page opens on the current month, on its first page of events that
+    // haven't ended. Finished events sit on their own pages to the left; past
+    // them, the pager's end buttons step to the month before or after.
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -201,11 +201,11 @@
       });
     });
 
-    /* ---------- Current month first, then upcoming, then past ---------- */
+    /* ---------- Finished events first (they page off to the left), then upcoming ---------- */
 
     events.sort(function (a, b) {
-      if (a.past !== b.past) return a.past ? 1 : -1;      // current month and later first
-      return a.past ? b.time - a.time : a.time - b.time;  // past: most recent first
+      if (a.past !== b.past) return a.past ? -1 : 1;
+      return a.time - b.time;   // oldest to newest, like a calendar
     });
 
     const listParent = items[0].parentElement;
@@ -345,13 +345,41 @@
       return Math.max(cols, 1);
     }
 
+    let pageList = [[]];  // the events on each page
+    let startPage = 0;    // first page of events that haven't ended
+
+    // Finished events get their own pages, left of the upcoming ones, so the
+    // grid opens on what's next. The page just left of it holds the most
+    // recent finished events (a partial page goes furthest left).
+    function chunk(list, fromEnd) {
+      const pages = [];
+      const rem = fromEnd ? list.length % pageSize : 0;
+      if (rem) pages.push(list.slice(0, rem));
+      for (let i = rem; i < list.length; i += pageSize) pages.push(list.slice(i, i + pageSize));
+      return pages;
+    }
+
+    function buildPages() {
+      pageSize = columns() * ROWS_PER_PAGE;
+      const done = matches.filter(function (e) { return e.past; });
+      const open = matches.filter(function (e) { return !e.past; });
+      const donePages = chunk(done, open.length > 0);
+      pageList = donePages.concat(chunk(open, false));
+      if (!pageList.length) pageList = [[]];
+      startPage = open.length ? donePages.length : 0;
+      pageCount = pageList.length;
+    }
+
+    function pageOf(event) {
+      return pageList.findIndex(function (p) { return p.indexOf(event) >= 0; });
+    }
+
     function showPage(index) {
       page = Math.max(0, Math.min(index, pageCount - 1));
-      const start = page * pageSize;
+      const onPage = pageList[page];
 
-      matches.forEach(function (e, i) {
-        const onPage = i >= start && i < start + pageSize;
-        e.item.classList.toggle('ev-off-page', !onPage);
+      matches.forEach(function (e) {
+        e.item.classList.toggle('ev-off-page', onPage.indexOf(e) < 0);
       });
 
       renderPager();
@@ -420,8 +448,7 @@
 
     // Cards on a newly shown page skip the scroll fade-in; the slide is their entrance
     function settleCards(index) {
-      const start = index * pageSize;
-      matches.slice(start, start + pageSize).forEach(function (e) {
+      (pageList[index] || []).forEach(function (e) {
         const card = e.item.querySelector('.events-card');
         if (card) card.classList.add('fade-in-active');
         e.item.querySelectorAll('.reveal-up').forEach(function (el) {
@@ -445,7 +472,7 @@
       if (!monthSelect || !key) return;
       slide(dir, function () {
         monthSelect.value = key;
-        apply({ lastPage: dir < 0 });
+        apply(dir < 0 ? { lastPage: true } : { firstPage: true });
         settleCards(page);
       });
     }
@@ -502,10 +529,10 @@
         paging.cancel();
         paging = null;
       }
-      const firstShown = page * pageSize;
-      pageSize = columns() * ROWS_PER_PAGE;
-      pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
-      showPage(resetPage ? 0 : Math.floor(firstShown / pageSize));
+      const firstShown = pageList[page] && pageList[page][0];
+      buildPages();
+      const keep = !resetPage && firstShown ? pageOf(firstShown) : -1;
+      showPage(keep >= 0 ? keep : startPage);
     }
 
     function stepBack() {
@@ -554,10 +581,10 @@
     // The details carousel (events.js) asks for the page holding the card it closed on
     document.addEventListener('savoya:events-reveal', function (event) {
       const item = event.detail && event.detail.item;
-      const index = matches.findIndex(function (e) { return e.item === item; });
-      if (index < 0) return;
-      const target = Math.floor(index / pageSize);
-      if (target !== page) {
+      const event_ = matches.find(function (e) { return e.item === item; });
+      if (!event_) return;
+      const target = pageOf(event_);
+      if (target >= 0 && target !== page) {
         settleCards(target);
         showPage(target);
       }
@@ -587,7 +614,10 @@
 
       const shown = matches.length;
       paginate(true);
-      if (options && options.lastPage && pageCount > 1) showPage(pageCount - 1);
+      // Stepping across months walks the calendar: back lands on the month's
+      // last page, forward on its first (which may be finished events)
+      if (options && options.lastPage) showPage(pageCount - 1);
+      else if (options && options.firstPage) showPage(0);
 
       if (countEl) {
         countEl.textContent =
