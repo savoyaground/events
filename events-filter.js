@@ -6,6 +6,9 @@
   - The next event (the first one that hasn't ended) is highlighted
   - Pagination is just "Last Month" and "Next Month"
   - Search and City still filter; the month buttons skip months with no matches
+  - v3.3: in the current month, finished events pile into a tilted stack in the
+    first cell (the next event is second); click the stack or "Show Past Events"
+    to spread them, "Hide Past Events" to stack them again
 */
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
@@ -172,6 +175,224 @@
     if (US_STATES[key] && (inUS || !COUNTRIES[key])) return city + ', ' + US_STATES[key];
     if (COUNTRIES[key]) return city + ', ' + COUNTRIES[key];
     return city + ', ' + region;
+  }
+
+  /* ==========================================================
+     Past-events stack
+     In a month that has both finished and upcoming events, the finished
+     ones pile up in the first grid cell like a stack of cards, each with
+     a slight random tilt. The highlighted next event takes the second cell.
+     Clicking the stack (or the "Show Past Events" button above the grid)
+     spreads them back into the normal grid; the button stacks them again.
+     ========================================================== */
+
+  const STACK_STYLES = `
+    .ev-list-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .ev-past-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 36px; padding: 0 14px;
+      border: 1px solid rgba(20, 19, 19, .15); border-radius: 8px;
+      background: transparent; color: #141313;
+      font: inherit; font-size: 14px; font-weight: 500; line-height: 1;
+      white-space: nowrap; cursor: pointer;
+      transition: border-color 200ms ease, color 200ms ease;
+    }
+    .ev-past-toggle[hidden] { display: none; }
+    .ev-past-toggle svg { transition: transform 300ms ease; }
+    .ev-past-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+    @media (hover: hover) { .ev-past-toggle:hover { border-color: #C56129; color: #C56129; } }
+    .ev-past-toggle:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
+
+    /* Stacked: every past card sits in the first cell, tilted */
+    .ev-stacked > .ev-in-stack {
+      grid-row: 1; grid-column: 1;
+      transform: rotate(var(--ev-rot, 0deg)) translate(var(--ev-x, 0px), var(--ev-y, 0px));
+      transform-origin: 50% 60%;
+      transition: transform 300ms cubic-bezier(.22, 1, .36, 1);
+    }
+    .ev-stacked > .ev-in-stack .events-card { box-shadow: 0 1px 2px rgba(20, 19, 19, .06), 0 8px 24px rgba(20, 19, 19, .06); }
+    .ev-stacked.ev-stack-hover > .ev-in-stack {
+      transform: rotate(calc(var(--ev-rot, 0deg) * 1.8)) translate(calc(var(--ev-x, 0px) * 1.8), calc(var(--ev-y, 0px) * 1.8));
+    }
+
+    /* The whole stack is one button */
+    .ev-stack-hit {
+      grid-row: 1; grid-column: 1; align-self: stretch;
+      position: relative; z-index: 60;
+      margin: 0; padding: 0; border: 0; border-radius: 12px;
+      background: transparent; cursor: pointer;
+    }
+    .ev-stack-hit[hidden] { display: none; }
+    .ev-stack-hit:focus-visible { outline: 2px solid #C56129; outline-offset: 4px; }
+    .ev-stack-count {
+      position: absolute; top: 16px; left: 16px;
+      padding: 6px 12px; border-radius: 999px;
+      background: #141313; color: #FFFCF8;
+      font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: .02em;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ev-stacked > .ev-in-stack, .ev-past-toggle svg { transition: none; }
+    }
+  `;
+
+  const TOGGLE_ICON =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M6 9l6 6 6-6"/></svg>';
+
+  function createPastStack(grid, anchorEl, settle) {
+    if (!document.getElementById('events-stack-styles')) {
+      const style = document.createElement('style');
+      style.id = 'events-stack-styles';
+      style.textContent = STACK_STYLES;
+      document.head.appendChild(style);
+    }
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    let shownItems = [];   // every card on screen, in order
+    let pastItems = [];    // the finished ones among them
+    let canStack = false;  // month has both finished and upcoming events
+    let open = false;
+    let groupKey = '';
+
+    // Toggle button, next to the event count above the grid
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'ev-past-toggle';
+    toggle.hidden = true;
+
+    if (anchorEl && anchorEl.parentElement) {
+      const bar = document.createElement('div');
+      bar.className = 'ev-list-bar';
+      anchorEl.parentElement.insertBefore(bar, anchorEl);
+      bar.appendChild(anchorEl);
+      bar.appendChild(toggle);
+    } else {
+      grid.parentElement.insertBefore(toggle, grid);
+    }
+
+    // Click target covering the stack
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'ev-stack-hit';
+    hit.hidden = true;
+    const chip = document.createElement('span');
+    chip.className = 'ev-stack-count';
+    chip.setAttribute('aria-hidden', 'true');
+    hit.appendChild(chip);
+    grid.appendChild(hit);
+
+    hit.addEventListener('mouseenter', function () { grid.classList.add('ev-stack-hover'); });
+    hit.addEventListener('mouseleave', function () { grid.classList.remove('ev-stack-hover'); });
+    hit.addEventListener('click', function () { setOpen(true, true); });
+    toggle.addEventListener('click', function () { setOpen(!open, true); });
+
+    // A slight random tilt per card, kept for the whole visit
+    function tilt(item, isTop) {
+      if (!item.evTilt) {
+        const spread = isTop ? 1.2 : 3;
+        item.evTilt = {
+          rot: (Math.random() * 2 - 1) * spread,
+          x: (Math.random() * 2 - 1) * 6,
+          y: (Math.random() * 2 - 1) * 4
+        };
+      }
+      return item.evTilt;
+    }
+
+    function stackTransform(item) {
+      const t = item.evTilt || { rot: 0, x: 0, y: 0 };
+      return 'rotate(' + t.rot.toFixed(2) + 'deg) translate(' + t.x.toFixed(1) + 'px, ' + t.y.toFixed(1) + 'px)';
+    }
+
+    function render() {
+      const stacked = canStack && !open;
+      const count = pastItems.length;
+
+      grid.classList.toggle('ev-stacked', stacked);
+      if (!stacked) grid.classList.remove('ev-stack-hover');
+
+      pastItems.forEach(function (item, i) {
+        const isTop = i === count - 1;   // the most recent finished event ends up on top
+        const t = tilt(item, isTop);
+        item.classList.toggle('ev-in-stack', stacked);
+        item.style.zIndex = stacked ? String(i + 1) : '';
+        item.style.setProperty('--ev-rot', t.rot.toFixed(2) + 'deg');
+        item.style.setProperty('--ev-x', t.x.toFixed(1) + 'px');
+        item.style.setProperty('--ev-y', t.y.toFixed(1) + 'px');
+        item.inert = stacked;
+      });
+
+      hit.hidden = !stacked;
+      chip.textContent = count + (count === 1 ? ' Past Event' : ' Past Events');
+      hit.setAttribute('aria-label', 'Show ' + chip.textContent.toLowerCase());
+
+      toggle.hidden = !canStack;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.innerHTML = '<span>' + (open ? 'Hide Past Events' : 'Show Past Events (' + count + ')') + '</span>' + TOGGLE_ICON;
+    }
+
+    // FLIP: measure, switch layout, then animate every card from where it was
+    function setOpen(next, animate) {
+      if (!canStack || next === open) return;
+
+      const items = shownItems.slice();
+      const wasStacked = !open;
+      const before = new Map();
+      items.forEach(function (item) { before.set(item, { x: item.offsetLeft, y: item.offsetTop }); });
+
+      open = next;
+      if (open && settle) settle(pastItems);
+      render();
+
+      if (!animate || reducedMotion.matches || !grid.animate) return;
+
+      const nowStacked = !open;
+      items.forEach(function (item, i) {
+        const b = before.get(item);
+        const dx = b.x - item.offsetLeft;
+        const dy = b.y - item.offsetTop;
+        const inStack = pastItems.indexOf(item) >= 0;
+        const from = 'translate(' + dx + 'px, ' + dy + 'px)' + (inStack && wasStacked ? ' ' + stackTransform(item) : '');
+        const to = inStack && nowStacked ? stackTransform(item) : 'none';
+        if (!dx && !dy && from === to) return;
+        item.animate(
+          [{ transform: from }, { transform: to }],
+          { duration: 560, delay: Math.min(i, 8) * 28, easing: 'cubic-bezier(.22, 1, .36, 1)', fill: 'backwards' }
+        );
+      });
+    }
+
+    // The popup asks for a card when it closes; spread the stack if that card is in it
+    document.addEventListener('savoya:events-reveal', function (event) {
+      const item = event.detail && event.detail.item;
+      if (item && !open && canStack && pastItems.indexOf(item) >= 0) setOpen(true, false);
+    });
+
+    // Called after every filter or month change with the cards now shown
+    return function update(shown) {
+      shownItems = shown.map(function (e) { return e.item; });
+      pastItems = shown.filter(function (e) { return e.past; }).map(function (e) { return e.item; });
+      const hasUpcoming = shown.some(function (e) { return !e.past; });
+      canStack = pastItems.length > 0 && hasUpcoming;
+
+      // A different set of finished events (new month or filter) starts stacked
+      const key = pastItems.map(function (item) { return Array.prototype.indexOf.call(grid.children, item); }).join(',');
+      if (key !== groupKey) { open = false; groupKey = key; }
+
+      // Leftover stack styles on cards that are no longer in the group
+      Array.prototype.forEach.call(grid.querySelectorAll('.ev-in-stack'), function (item) {
+        if (pastItems.indexOf(item) < 0) {
+          item.classList.remove('ev-in-stack');
+          item.style.zIndex = '';
+          item.inert = false;
+        }
+      });
+
+      render();
+    };
   }
 
   function init() {
@@ -447,6 +668,11 @@
       '</button>';
     listWrap.parentElement.insertBefore(pager, listWrap.nextSibling);
 
+    // Finished events of the current month stack up in the first cell
+    const updateStack = createPastStack(grid, countEl, function (stackItems) {
+      settleCards(events.filter(function (e) { return stackItems.indexOf(e.item) >= 0; }));
+    });
+
     const prevBtn = pager.querySelector('[data-dir="-1"]');
     const nextBtn = pager.querySelector('[data-dir="1"]');
 
@@ -568,6 +794,7 @@
       });
 
       markNext(candidates, shown);
+      updateStack(shown);
       renderPager(monthList);
 
       if (countEl) {
