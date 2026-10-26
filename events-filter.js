@@ -187,12 +187,15 @@
      ========================================================== */
 
   const STACK_STYLES = `
-    .ev-list-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    /* Its own line right above the first card, always on the left */
     .ev-past-toggle {
       display: inline-flex; align-items: center; gap: 6px;
-      height: 36px; padding: 0 14px;
-      border: 1px solid rgba(20, 19, 19, .15); border-radius: 8px;
-      background: transparent; color: #141313;
+      align-self: flex-start !important;
+      width: auto !important;
+      margin: 8px auto 8px 0 !important;
+      height: 36px; padding: 0 12px 0 16px;
+      border: 1px solid #C9C6C2; border-radius: 999px;
+      background: #FFFFFF; color: #141313;
       font: inherit; font-size: 14px; font-weight: 500; line-height: 1;
       white-space: nowrap; cursor: pointer;
       transition: border-color 200ms ease, color 200ms ease;
@@ -257,21 +260,15 @@
     let open = false;
     let groupKey = '';
 
-    // Toggle button, next to the event count above the grid
+    // Toggle button on its own line directly above the grid, left-aligned.
+    // The event count above it is left where the page design puts it.
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'ev-past-toggle';
     toggle.hidden = true;
 
-    if (anchorEl && anchorEl.parentElement) {
-      const bar = document.createElement('div');
-      bar.className = 'ev-list-bar';
-      anchorEl.parentElement.insertBefore(bar, anchorEl);
-      bar.appendChild(anchorEl);
-      bar.appendChild(toggle);
-    } else {
-      grid.parentElement.insertBefore(toggle, grid);
-    }
+    const listWrap = grid.parentElement;   // .events-collection-list
+    listWrap.parentElement.insertBefore(toggle, listWrap);
 
     // Click target covering the stack
     const hit = document.createElement('button');
