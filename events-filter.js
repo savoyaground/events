@@ -12,6 +12,7 @@
 
   const LABEL_NEXT = 'Up Next';
   const LABEL_NOW = 'Happening Now';
+  const LABEL_ENDED = 'Event Ended';   // replaces "Add to Calendar" on finished events
 
   function pagerChevron(path) {
     return (
@@ -49,6 +50,13 @@
       @media (prefers-reduced-motion: reduce) {
         .glow-card.ev-halo, .glow-card.ev-halo::before { animation: none; }
       }
+
+      /* Finished events: black-and-white photo, Add to Calendar disabled.
+         The rest of the card (View Full Description) still works. */
+      .events-card.ev-past .events-img { filter: grayscale(1); }
+      .events-card.ev-past .btn-add-to-cal:not(.b-0) { opacity: .45; cursor: default; pointer-events: none; }
+      .events-card.ev-past .btn-add-to-cal:not(.b-0) .calendar-toggle-icon { display: none; }
+      .events-card.ev-past .item-list-add-to-cal { display: none !important; }
 
       .ev-next-badge {
         position: absolute;
@@ -243,6 +251,35 @@
 
     const badge = document.createElement('span');
     badge.className = 'ev-next-badge';
+
+    // Finished events: black-and-white photo and a disabled "Event Ended" button.
+    // The popup (events.js) copies cards with their classes, so it matches.
+    events.forEach(function (e) {
+      if (!e.past) return;
+      e.card.classList.add('ev-past');
+
+      const button = e.card.querySelector('.btn-add-to-cal:not(.b-0)');
+      if (!button) return;
+      const label = Array.from(button.childNodes).find(function (node) {
+        return node.nodeType === 3 && node.textContent.trim();
+      });
+      if (label) label.textContent = LABEL_ENDED + ' ';
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('tabindex', '-1');
+    });
+
+    // Block clicks and keys on a disabled button, in the grid and in the popup
+    ['click', 'keydown'].forEach(function (type) {
+      document.addEventListener(type, function (event) {
+        const target = event.target;
+        if (!target || !target.closest) return;
+        if (type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        if (target.closest('.events-card.ev-past .btn-add-to-cal:not(.b-0)')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    });
 
     // The halo plays one lap, once per page load, the first time the
     // highlighted card is on screen (on phones it can start below the fold)
