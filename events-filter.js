@@ -1,7 +1,21 @@
+/*
+  Savoya Events filter, v3
 
+  - One month at a time, every card for that month on one page
+  - Opens on the current month
+  - The next event (the first one that hasn't ended) is highlighted
+  - Pagination is just "Last Month" and "Next Month"
+  - Search and City still filter; the month buttons skip months with no matches
+*/
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
-  const ROWS_PER_PAGE = 3;   // cards per page = columns at this screen size x 3
+
+  // Finished events in the month are dimmed so the highlighted card stands out.
+  // Set to false to show them at full strength.
+  const DIM_PAST = true;
+
+  const LABEL_NEXT = 'Up Next';
+  const LABEL_NOW = 'Happening Now';
 
   function pagerChevron(path) {
     return (
@@ -11,30 +25,52 @@
     );
   }
 
-  function injectPagerStyles() {
-    if (document.getElementById('events-pager-styles')) return;
+  function injectStyles() {
+    if (document.getElementById('events-filter-styles')) return;
     const style = document.createElement('style');
-    style.id = 'events-pager-styles';
+    style.id = 'events-filter-styles';
     style.textContent = `
-      .events-collection-list .w-dyn-item.ev-off-page { display: none !important; }
+      /* Next event: copper ring inside the card's own border, so nothing shifts */
+      .events-card.ev-next {
+        border-color: #C56129 !important;
+        box-shadow: 0 0 0 1px #C56129;
+      }
+      .ev-next-badge {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 2;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #C56129;
+        color: #FFFCF8;
+        font-family: Inter, sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: .02em;
+        pointer-events: none;
+      }
 
+      /* Finished events */
+      .events-card.ev-past .events-img { filter: grayscale(1); opacity: .6; }
+      .events-card.ev-past .event-card-body { opacity: .6; }
+
+      /* Month pager */
       .events-pager {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 8px;
+        gap: 12px;
         margin-top: 48px;
       }
       .events-pager[hidden] { display: none; }
-      .events-pager-pages { display: flex; gap: 4px; }
-
-      .events-pager-arrow,
-      .events-pager-page {
-        display: grid;
-        place-items: center;
-        min-width: 44px;
+      .events-pager-arrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         height: 44px;
-        padding: 0 12px;
+        padding: 0 18px 0 12px;
         border: 1px solid rgba(20, 19, 19, .15);
         border-radius: 8px;
         background: transparent;
@@ -43,37 +79,19 @@
         font-size: 14px;
         font-weight: 500;
         line-height: 1;
+        white-space: nowrap;
         cursor: pointer;
-        transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, opacity 200ms ease;
+        transition: border-color 200ms ease, color 200ms ease, opacity 200ms ease;
       }
-      .events-pager-page { border-color: transparent; }
-      .events-pager-page[aria-current="page"] {
-        background: #141313;
-        border-color: #141313;
-        color: #FFFCF8;
-        cursor: default;
-      }
+      .events-pager-arrow[data-dir="1"] { padding: 0 12px 0 18px; }
       @media (hover: hover) {
-        .events-pager-arrow:not(:disabled):hover,
-        .events-pager-page:not([aria-current="page"]):hover {
-          border-color: #C56129;
-          color: #C56129;
-        }
+        .events-pager-arrow:not(:disabled):hover { border-color: #C56129; color: #C56129; }
       }
       .events-pager-arrow:disabled { opacity: .3; cursor: default; }
-      .events-pager-arrow.is-month {
-        display: inline-flex;
-        gap: 6px;
-        padding: 0 16px 0 10px;
-        white-space: nowrap;
-      }
-      .events-pager-arrow.is-month[data-dir="1"] { padding: 0 10px 0 16px; }
-      .events-pager-pages[hidden] { display: none; }
-      .events-pager-arrow:focus-visible,
-      .events-pager-page:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
+      .events-pager-arrow:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
 
       @media (prefers-reduced-motion: reduce) {
-        .events-pager-arrow, .events-pager-page { transition: none; }
+        .events-pager-arrow { transition: none; }
       }
     `;
     document.head.appendChild(style);
@@ -144,14 +162,13 @@
     const monthSelect = document.getElementById('all-months');
     const items = Array.from(document.querySelectorAll(LIST_ITEM));
 
-    if (!items.length || (!search && !citySelect && !monthSelect)) return;
+    if (!items.length) return;
+
+    injectStyles();
 
     /* ---------- Read each event from its card ---------- */
 
-    // Each event files under the month it starts in (visitor's local time).
-    // The page opens on the current month, on its first page of events that
-    // haven't ended. Finished events sit on their own pages to the left; past
-    // them, the pager's end buttons step to the month before or after.
+    // Dates use the visitor's local time
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -180,13 +197,16 @@
 
       // Finished = its last day is before today
       const past = !!(end && end < today);
+      const started = !!(start && start <= today);
 
       // An event that began in an earlier month and is still running files under this month
       const monthDate = valid && !past && start < monthStart ? monthStart : start;
 
       events.push({
-        past: past,
         item: item,
+        card: card,
+        past: past,
+        started: started,
         city: cityLabel(location),
         monthKey: valid ? monthKeyOf(monthDate) : '',
         monthLabel: valid
@@ -201,24 +221,44 @@
       });
     });
 
-    /* ---------- Finished events first (they page off to the left), then upcoming ---------- */
+    /* ---------- Calendar order: soonest start first ---------- */
 
-    events.sort(function (a, b) {
-      if (a.past !== b.past) return a.past ? -1 : 1;
-      return a.time - b.time;   // oldest to newest, like a calendar
-    });
+    events.sort(function (a, b) { return a.time - b.time; });
 
     const listParent = items[0].parentElement;
     events.forEach(function (event) { listParent.appendChild(event.item); });
 
+    /* ---------- Mark finished events and the next one ---------- */
+
+    const badge = document.createElement('span');
+    badge.className = 'ev-next-badge';
+
+    events.forEach(function (e) {
+      e.card.classList.toggle('ev-past', DIM_PAST && e.past);
+    });
+
+    // Highlights the one next event (first unfinished one that fits the
+    // search and city), and only when its month is the one on screen
+    function markNext(candidates, shown) {
+      events.forEach(function (e) { e.card.classList.remove('ev-next'); });
+      badge.remove();
+
+      const next = candidates.find(function (e) { return !e.past; });
+      if (!next || shown.indexOf(next) < 0) return;
+
+      next.card.classList.add('ev-next');
+      badge.textContent = next.started ? LABEL_NOW : LABEL_NEXT;
+      next.card.appendChild(badge);
+    }
+
     /* ---------- Fill the City and Month dropdowns ---------- */
 
-    function fillSelect(select, entries) {
+    function fillSelect(select, entries, keepPlaceholder) {
       if (!select) return;
 
       const placeholder = select.options[0];
       select.innerHTML = '';
-      if (placeholder) {
+      if (placeholder && keepPlaceholder) {
         placeholder.value = '';
         select.appendChild(placeholder);
       }
@@ -242,20 +282,26 @@
         months.push({ value: e.monthKey, label: e.monthLabel });
       }
     });
-
     months.sort(function (a, b) { return a.value < b.value ? -1 : a.value > b.value ? 1 : 0; });
 
-    fillSelect(citySelect, cities);
-    fillSelect(monthSelect, months);
+    fillSelect(citySelect, cities, true);
+    fillSelect(monthSelect, months, false);   // always one month, so no "All Months"
 
-    // Open on this month; if it has no events, the next month that does
+    // Current month; if it has no events, the next month that does
     // (or the latest one, if every event is in the past)
     const defaultMonth = (function () {
       if (!months.length) return '';
       const ahead = months.find(function (m) { return m.value >= currentMonthKey; });
       return (ahead || months[months.length - 1]).value;
     })();
-    if (monthSelect) monthSelect.value = defaultMonth;
+
+    let month = defaultMonth;
+    if (monthSelect) monthSelect.value = month;
+
+    function monthLabel(key) {
+      const m = months.find(function (entry) { return entry.value === key; });
+      return m ? m.label : '';
+    }
 
     /* ---------- Count, empty state, active tags ---------- */
 
@@ -263,7 +309,6 @@
 
     const emptyEl = document.createElement('p');
     emptyEl.className = 'events-empty v2-par';
-    emptyEl.textContent = 'No events match your filters.';
     emptyEl.hidden = true;
     listParent.parentElement.appendChild(emptyEl);
 
@@ -307,195 +352,67 @@
       });
     }
 
-    /* ---------- Pagination: 3 rows per page, slides left and right ---------- */
+    /* ---------- Month pager: Last Month / Next Month ---------- */
 
     const grid = listParent;               // the CMS grid (.w-dyn-items)
     const listWrap = grid.parentElement;   // .events-collection-list
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const EASE = 'cubic-bezier(.22, 1, .36, 1)';
-
-    injectPagerStyles();
 
     const pager = document.createElement('nav');
     pager.className = 'events-pager';
-    pager.setAttribute('aria-label', 'Event pages');
-    pager.hidden = true;
+    pager.setAttribute('aria-label', 'Event months');
     pager.innerHTML =
-      '<button type="button" class="events-pager-arrow" data-dir="-1" aria-label="Previous page">' +
-        pagerChevron('M15 18l-6-6 6-6') +
+      '<button type="button" class="events-pager-arrow" data-dir="-1">' +
+        pagerChevron('M15 18l-6-6 6-6') + '<span>Last Month</span>' +
       '</button>' +
-      '<div class="events-pager-pages"></div>' +
-      '<button type="button" class="events-pager-arrow" data-dir="1" aria-label="Next page">' +
-        pagerChevron('M9 18l6-6-6-6') +
+      '<button type="button" class="events-pager-arrow" data-dir="1">' +
+        '<span>Next Month</span>' + pagerChevron('M9 18l6-6-6-6') +
       '</button>';
     listWrap.parentElement.insertBefore(pager, listWrap.nextSibling);
 
-    const pagesEl = pager.querySelector('.events-pager-pages');
-    const prevPage = pager.querySelector('[data-dir="-1"]');
-    const nextPage = pager.querySelector('[data-dir="1"]');
+    const prevBtn = pager.querySelector('[data-dir="-1"]');
+    const nextBtn = pager.querySelector('[data-dir="1"]');
 
-    let matches = [];     // filtered events, in order
-    let page = 0;
-    let pageCount = 1;
-    let pageSize = 9;
-    let paging = null;    // running slide, so fast clicks don't stack
+    let prevMonth = '';
+    let nextMonth = '';
+    let sliding = null;
 
-    function columns() {
-      const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
-      return Math.max(cols, 1);
-    }
-
-    let pageList = [[]];  // the events on each page
-    let startPage = 0;    // first page of events that haven't ended
-
-    // Finished events get their own pages, left of the upcoming ones, so the
-    // grid opens on what's next. The page just left of it holds the most
-    // recent finished events (a partial page goes furthest left).
-    function chunk(list, fromEnd) {
-      const pages = [];
-      const rem = fromEnd ? list.length % pageSize : 0;
-      if (rem) pages.push(list.slice(0, rem));
-      for (let i = rem; i < list.length; i += pageSize) pages.push(list.slice(i, i + pageSize));
-      return pages;
-    }
-
-    function buildPages() {
-      pageSize = columns() * ROWS_PER_PAGE;
-      const done = matches.filter(function (e) { return e.past; });
-      const open = matches.filter(function (e) { return !e.past; });
-      const donePages = chunk(done, open.length > 0);
-      pageList = donePages.concat(chunk(open, false));
-      if (!pageList.length) pageList = [[]];
-      startPage = open.length ? donePages.length : 0;
-      pageCount = pageList.length;
-    }
-
-    function pageOf(event) {
-      return pageList.findIndex(function (p) { return p.indexOf(event) >= 0; });
-    }
-
-    function showPage(index) {
-      page = Math.max(0, Math.min(index, pageCount - 1));
-      const onPage = pageList[page];
-
-      matches.forEach(function (e) {
-        e.item.classList.toggle('ev-off-page', onPage.indexOf(e) < 0);
-      });
-
-      renderPager();
-    }
-
-    // Months that have events for the current search and city, in order
-    let monthsWithMatches = [];
-    let stepPrevMonth = '';   // set when the left arrow steps to the previous month
-    let stepNextMonth = '';   // set when the right arrow steps to the next month
-
-    function neighbourMonths() {
-      const month = monthSelect ? monthSelect.value : '';
-      if (!month) return { prev: '', next: '' };
+    function renderPager(monthsWithMatches) {
       const before = monthsWithMatches.filter(function (m) { return m < month; });
       const after = monthsWithMatches.filter(function (m) { return m > month; });
-      return { prev: before[before.length - 1] || '', next: after[0] || '' };
+      prevMonth = before[before.length - 1] || '';
+      nextMonth = after[0] || '';
+
+      prevBtn.disabled = !prevMonth;
+      nextBtn.disabled = !nextMonth;
+      prevBtn.setAttribute('aria-label', prevMonth ? 'Last Month: ' + monthLabel(prevMonth) : 'No earlier events');
+      nextBtn.setAttribute('aria-label', nextMonth ? 'Next Month: ' + monthLabel(nextMonth) : 'No later events');
+      pager.hidden = !prevMonth && !nextMonth;
     }
 
-    function monthName(key) {
-      const m = months.find(function (entry) { return entry.value === key; });
-      return m ? m.label : key;
-    }
-
-    const PREV_ICON = pagerChevron('M15 18l-6-6 6-6');
-    const NEXT_ICON = pagerChevron('M9 18l6-6-6-6');
-
-    function setArrow(btn, monthKey, isPrev) {
-      if (monthKey) {
-        btn.classList.add('is-month');
-        btn.innerHTML = isPrev
-          ? PREV_ICON + '<span>Last month</span>'
-          : '<span>Next month</span>' + NEXT_ICON;
-        btn.setAttribute('aria-label', (isPrev ? 'Last month: ' : 'Next month: ') + monthName(monthKey));
-      } else {
-        btn.classList.remove('is-month');
-        btn.innerHTML = isPrev ? PREV_ICON : NEXT_ICON;
-        btn.setAttribute('aria-label', isPrev ? 'Previous page' : 'Next page');
-      }
-    }
-
-    function renderPager() {
-      const nb = neighbourMonths();
-      stepPrevMonth = page === 0 ? nb.prev : '';
-      stepNextMonth = page >= pageCount - 1 ? nb.next : '';
-
-      pager.hidden = pageCount < 2 && !nb.prev && !nb.next;
-      pagesEl.hidden = pageCount < 2;
-      pagesEl.innerHTML = '';
-
-      for (let i = 0; i < pageCount; i += 1) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'events-pager-page';
-        btn.textContent = String(i + 1);
-        btn.setAttribute('aria-label', 'Page ' + (i + 1));
-        if (i === page) btn.setAttribute('aria-current', 'page');
-        btn.addEventListener('click', function () { goToPage(i); });
-        pagesEl.appendChild(btn);
-      }
-
-      setArrow(prevPage, stepPrevMonth, true);
-      setArrow(nextPage, stepNextMonth, false);
-      prevPage.disabled = page === 0 && !stepPrevMonth;
-      nextPage.disabled = page >= pageCount - 1 && !stepNextMonth;
-    }
-
-    // Cards on a newly shown page skip the scroll fade-in; the slide is their entrance
-    function settleCards(index) {
-      (pageList[index] || []).forEach(function (e) {
-        const card = e.item.querySelector('.events-card');
-        if (card) card.classList.add('fade-in-active');
+    // Cards in a newly shown month skip the scroll fade-in; the slide is their entrance
+    function settleCards(shown) {
+      shown.forEach(function (e) {
+        e.card.classList.add('fade-in-active');
         e.item.querySelectorAll('.reveal-up').forEach(function (el) {
           el.classList.add('reveal-up-active');
         });
       });
     }
 
-    function goToPage(index, options) {
-      index = Math.max(0, Math.min(index, pageCount - 1));
-      if (index === page) return;
-
-      slide(index > page ? 1 : -1, function () {
-        settleCards(index);
-        showPage(index);
-      }, options);
-    }
-
-    // Step to the month before (dir -1, lands on its last page) or after (dir 1, first page)
     function goToMonth(key, dir) {
-      if (!monthSelect || !key) return;
-      slide(dir, function () {
-        monthSelect.value = key;
-        apply(dir < 0 ? { lastPage: true } : { firstPage: true });
-        settleCards(page);
-      });
-    }
+      if (!key) return;
 
-    // Slide the grid out, swap what it shows, slide it back in
-    function slide(dir, swap, options) {
-      const animate = !(options && options.instant) && !reducedMotion.matches;
-
-      if (paging) paging.cancel();
-
-      // Keep the top of the grid in view when the new page is shorter
-      function keepInView() {
+      function swap() {
+        month = key;
+        if (monthSelect) monthSelect.value = key;
+        settleCards(apply());
         const top = listWrap.getBoundingClientRect().top;
-        if (top < 0) {
-          window.scrollBy({ top: top - 120, behavior: animate ? 'smooth' : 'auto' });
-        }
+        if (top < 0) window.scrollBy({ top: top - 120, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
       }
 
-      if (!animate) {
-        swap();
-        keepInView();
-        return;
-      }
+      if (sliding) sliding.cancel();
+      if (reducedMotion.matches || !grid.animate) { swap(); return; }
 
       const out = grid.animate(
         [
@@ -504,53 +421,31 @@
         ],
         { duration: 220, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' }
       );
-      paging = out;
+      sliding = out;
 
       out.onfinish = function () {
-        if (paging !== out) return;
+        if (sliding !== out) return;
         swap();
-        keepInView();
-
         const inn = grid.animate(
           [
             { transform: 'translateX(' + (dir * 64) + 'px)', opacity: 0 },
             { transform: 'translateX(0)', opacity: 1 }
           ],
-          { duration: 480, easing: EASE }
+          { duration: 480, easing: 'cubic-bezier(.22, 1, .36, 1)' }
         );
         out.cancel();
-        paging = inn;
-        inn.onfinish = function () { if (paging === inn) paging = null; };
+        sliding = inn;
+        inn.onfinish = function () { if (sliding === inn) sliding = null; };
       };
     }
 
-    function paginate(resetPage) {
-      if (paging) {
-        paging.cancel();
-        paging = null;
-      }
-      const firstShown = pageList[page] && pageList[page][0];
-      buildPages();
-      const keep = !resetPage && firstShown ? pageOf(firstShown) : -1;
-      showPage(keep >= 0 ? keep : startPage);
-    }
-
-    function stepBack() {
-      if (stepPrevMonth) goToMonth(stepPrevMonth, -1);
-      else goToPage(page - 1);
-    }
-    function stepForward() {
-      if (stepNextMonth) goToMonth(stepNextMonth, 1);
-      else goToPage(page + 1);
-    }
-
-    prevPage.addEventListener('click', stepBack);
-    nextPage.addEventListener('click', stepForward);
+    prevBtn.addEventListener('click', function () { goToMonth(prevMonth, -1); });
+    nextBtn.addEventListener('click', function () { goToMonth(nextMonth, 1); });
 
     // Touch swipe on the grid
     let touchStart = null;
     grid.addEventListener('touchstart', function (event) {
-      if (pager.hidden || event.touches.length !== 1) return;
+      if (event.touches.length !== 1) return;
       touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
     }, { passive: true });
     grid.addEventListener('touchend', function (event) {
@@ -560,71 +455,51 @@
       const dy = t.clientY - touchStart.y;
       touchStart = null;
       if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        if (dx < 0) stepForward();
-        else stepBack();
+        if (dx < 0) goToMonth(nextMonth, 1);
+        else goToMonth(prevMonth, -1);
       }
     }, { passive: true });
 
-    // Rows reflow at each breakpoint (3, 2 or 1 column): keep the same cards in view
-    let lastCols = columns();
-    let resizing = null;
-    window.addEventListener('resize', function () {
-      clearTimeout(resizing);
-      resizing = setTimeout(function () {
-        const cols = columns();
-        if (cols === lastCols) return;
-        lastCols = cols;
-        paginate(false);
-      }, 150);
-    });
-
-    // The details carousel (events.js) asks for the page holding the card it closed on
-    document.addEventListener('savoya:events-reveal', function (event) {
-      const item = event.detail && event.detail.item;
-      const event_ = matches.find(function (e) { return e.item === item; });
-      if (!event_) return;
-      const target = pageOf(event_);
-      if (target >= 0 && target !== page) {
-        settleCards(target);
-        showPage(target);
-      }
-    });
-
     /* ---------- Apply filters ---------- */
 
-    function apply(options) {
+    // Shows the chosen month's matching cards; returns them
+    function apply() {
       const query = search ? search.value.trim().toLowerCase() : '';
       const city = citySelect ? citySelect.value : '';
-      const month = monthSelect ? monthSelect.value : '';
-      const monthSet = {};
-      matches = [];
 
+      // Events that fit the search and city, in any month
+      const candidates = events.filter(function (e) {
+        return (!query || e.haystack.includes(query)) && (!city || e.city === city);
+      });
+      const monthList = Array.from(new Set(candidates
+        .map(function (e) { return e.monthKey; })
+        .filter(Boolean))).sort();
+
+      // If this month has no matches, move to the nearest month that does
+      // (the next one ahead first, otherwise the latest earlier one)
+      if (monthList.length && monthList.indexOf(month) < 0) {
+        const ahead = monthList.find(function (m) { return m > month; });
+        month = ahead || monthList[monthList.length - 1];
+        if (monthSelect) monthSelect.value = month;
+      }
+
+      const shown = [];
       events.forEach(function (e) {
-        const others =
-          (!query || e.haystack.includes(query)) &&
-          (!city || e.city === city);
-        const match = others && (!month || e.monthKey === month);
-
-        if (others && e.monthKey) monthSet[e.monthKey] = true;
+        const match = candidates.indexOf(e) >= 0 && e.monthKey === month;
         e.item.style.display = match ? '' : 'none';
-        if (match) matches.push(e);
+        if (match) shown.push(e);
       });
 
-      monthsWithMatches = Object.keys(monthSet).sort();
-
-      const shown = matches.length;
-      paginate(true);
-      // Stepping across months walks the calendar: back lands on the month's
-      // last page, forward on its first (which may be finished events)
-      if (options && options.lastPage) showPage(pageCount - 1);
-      else if (options && options.firstPage) showPage(0);
+      markNext(candidates, shown);
+      renderPager(monthList);
 
       if (countEl) {
         countEl.textContent =
-          shown + (shown === 1 ? ' event available' : ' events available');
+          shown.length + (shown.length === 1 ? ' event available' : ' events available');
       }
 
-      emptyEl.hidden = shown > 0;
+      emptyEl.textContent = 'No events match your filters.';
+      emptyEl.hidden = shown.length > 0;
 
       const active = [];
 
@@ -642,18 +517,11 @@
         });
       }
 
-      // The month the page opens on isn't a filter the visitor chose, so it gets no tag
-      if (month && month !== defaultMonth) {
-        active.push({
-          label: monthSelect.options[monthSelect.selectedIndex].text,
-          clear: function () { monthSelect.value = defaultMonth; }
-        });
-      }
-
       renderTags(active);
+      return shown;
     }
 
-    /* ---------- Events ---------- */
+    /* ---------- Inputs ---------- */
 
     let typing = null;
 
@@ -664,9 +532,14 @@
       });
     }
 
-    [citySelect, monthSelect].forEach(function (select) {
-      if (select) select.addEventListener('change', apply);
-    });
+    if (citySelect) citySelect.addEventListener('change', apply);
+
+    if (monthSelect) {
+      monthSelect.addEventListener('change', function () {
+        const key = monthSelect.value;
+        if (key && key !== month) goToMonth(key, key > month ? 1 : -1);
+      });
+    }
 
     // Stop Webflow's form handler: Enter just filters, it never submits.
     if (form) {
@@ -682,7 +555,8 @@
         event.preventDefault();
         if (search) search.value = '';
         if (citySelect) citySelect.value = '';
-        if (monthSelect) monthSelect.value = defaultMonth;
+        month = defaultMonth;
+        if (monthSelect) monthSelect.value = month;
         apply();
       });
     });
