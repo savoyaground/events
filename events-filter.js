@@ -10,10 +10,6 @@
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
 
-  // Finished events in the month are dimmed so the highlighted card stands out.
-  // Set to false to show them at full strength.
-  const DIM_PAST = true;
-
   const LABEL_NEXT = 'Up Next';
   const LABEL_NOW = 'Happening Now';
 
@@ -30,16 +26,35 @@
     const style = document.createElement('style');
     style.id = 'events-filter-styles';
     style.textContent = `
-      /* Next event: copper ring inside the card's own border, so nothing shifts */
-      .events-card.ev-next {
-        border-color: #C56129 !important;
-        box-shadow: 0 0 0 1px #C56129;
+      /* Next event: dark card */
+      .events-card.ev-next { background: #141313 !important; border-color: #141313 !important; }
+      .ev-next .events-card-dates { color: #DD9058 !important; }
+      .ev-next .events-card-location { color: #C9C6C2 !important; }
+      .ev-next .events-card-title { color: #FFFCF8 !important; }
+      .ev-next .event-details { color: #C9C6C2 !important; }
+      .ev-next .btn-add-to-cal:not(.b-0) { background: rgba(255, 252, 248, .08) !important; color: #FFFCF8 !important; }
+      .ev-next .btn-add-to-cal:not(.b-0) .calendar-toggle-icon::before,
+      .ev-next .btn-add-to-cal:not(.b-0) .calendar-toggle-icon::after { background-color: #FFFCF8 !important; }
+      .ev-next .btn-view-event-details { background: transparent !important; color: #DD9058 !important; }
+
+      /* One lap of the site's gold ring on load. The ring and its glow-spin
+         animation come from .glow-card in core/cards.css; this only plays it once. */
+      @keyframes ev-halo-glow {
+        0% { box-shadow: none; }
+        10%, 80% { box-shadow: 0 0 24px rgba(245, 173, 89, .28), 0 0 60px rgba(197, 97, 41, .16); }
+        100% { box-shadow: none; }
       }
+      .glow-card.ev-halo::before { opacity: 1; animation: glow-spin 3.5s linear .4s 1 both running; }
+      .glow-card.ev-halo { animation: ev-halo-glow 3.9s ease 1 both; }
+      @media (prefers-reduced-motion: reduce) {
+        .glow-card.ev-halo, .glow-card.ev-halo::before { animation: none; }
+      }
+
       .ev-next-badge {
         position: absolute;
         top: 16px;
         left: 16px;
-        z-index: 2;
+        z-index: 3;
         padding: 6px 12px;
         border-radius: 999px;
         background: #C56129;
@@ -51,10 +66,6 @@
         letter-spacing: .02em;
         pointer-events: none;
       }
-
-      /* Finished events */
-      .events-card.ev-past .events-img { filter: grayscale(1); opacity: .6; }
-      .events-card.ev-past .event-card-body { opacity: .6; }
 
       /* Month pager */
       .events-pager {
@@ -233,22 +244,51 @@
     const badge = document.createElement('span');
     badge.className = 'ev-next-badge';
 
-    events.forEach(function (e) {
-      e.card.classList.toggle('ev-past', DIM_PAST && e.past);
-    });
+    // The halo plays one lap, once per page load, the first time the
+    // highlighted card is on screen (on phones it can start below the fold)
+    let haloPlayed = false;
+    let haloWatch = null;
+
+    function playHalo(card) {
+      if (haloPlayed) return;
+      if (haloWatch) haloWatch.disconnect();
+
+      function play() {
+        haloPlayed = true;
+        card.classList.remove('ev-halo');
+        void card.offsetWidth;
+        card.classList.add('ev-halo');
+        card.addEventListener('animationend', function done(event) {
+          if (event.animationName !== 'ev-halo-glow') return;
+          card.classList.remove('ev-halo');
+          card.removeEventListener('animationend', done);
+        });
+      }
+
+      if (!('IntersectionObserver' in window)) { play(); return; }
+      haloWatch = new IntersectionObserver(function (entries) {
+        if (entries.some(function (entry) { return entry.isIntersecting; })) {
+          haloWatch.disconnect();
+          play();
+        }
+      }, { threshold: 0.5 });
+      haloWatch.observe(card);
+    }
 
     // Highlights the one next event (first unfinished one that fits the
     // search and city), and only when its month is the one on screen
     function markNext(candidates, shown) {
-      events.forEach(function (e) { e.card.classList.remove('ev-next'); });
+      events.forEach(function (e) { e.card.classList.remove('ev-next', 'glow-card', 'ev-halo'); });
       badge.remove();
 
       const next = candidates.find(function (e) { return !e.past; });
       if (!next || shown.indexOf(next) < 0) return;
 
-      next.card.classList.add('ev-next');
+      // glow-card (core/cards.css) also gives it the site's ring on hover
+      next.card.classList.add('ev-next', 'glow-card');
       badge.textContent = next.started ? LABEL_NOW : LABEL_NEXT;
       next.card.appendChild(badge);
+      playHalo(next.card);
     }
 
     /* ---------- Fill the City and Month dropdowns ---------- */
