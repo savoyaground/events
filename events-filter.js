@@ -10,7 +10,8 @@
     first cell (the next event is second); click the stack or "Show Past Events"
     to spread them, "Hide Past Events" to stack them again
   - v3.5: hovering the stack shows a slow gold radar halo and a tooltip that
-    follows the cursor ("Click to see N past events")
+    follows the cursor ("Click to see N past events")  - v3.6: while hovered, the stacked cards riffle like a dealer's deck
+    (lift one after another, fan out, drop back) every few seconds
 */
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
@@ -371,6 +372,42 @@
       hit.addEventListener('click', hideTip);
       window.addEventListener('scroll', hideTip, { passive: true });
     }
+
+    // v3.6 Dealer-style riffle: while the stack is hovered, the cards lift one
+    // after another (bottom card first), fan out a little and drop back into
+    // the stack, every few seconds. Skipped for reduced motion.
+    const RIFFLE_EVERY = 2600; // ms between riffles while hovered
+    let riffleTimer = 0;
+
+    function riffle() {
+      if (reducedMotion.matches || hit.hidden) return;
+      const cards = Array.from(grid.querySelectorAll('.ev-in-stack'))
+        .sort(function (a, b) { return (Number(a.style.zIndex) || 0) - (Number(b.style.zIndex) || 0); });
+      cards.forEach(function (item, i) {
+        const card = item.querySelector('.events-card') || item;
+        if (!card.animate) return;
+        const dir = i % 2 ? 1 : -1;
+        card.animate([
+          { transform: 'translate(0, 0) rotate(0deg)' },
+          { transform: 'translate(' + (dir * 12) + 'px, -22px) rotate(' + (dir * 3) + 'deg)', offset: 0.45 },
+          { transform: 'translate(0, 0) rotate(0deg)' }
+        ], { duration: 620, delay: i * 110, easing: 'cubic-bezier(.22, 1, .36, 1)' });
+      });
+    }
+
+    function stopRiffle() {
+      clearInterval(riffleTimer);
+      riffleTimer = 0;
+    }
+
+    hit.addEventListener('pointerenter', function (event) {
+      if (event.pointerType && event.pointerType !== 'mouse') return;
+      riffle();
+      stopRiffle();
+      riffleTimer = setInterval(riffle, RIFFLE_EVERY);
+    });
+    hit.addEventListener('pointerleave', stopRiffle);
+    hit.addEventListener('click', stopRiffle);
     toggle.addEventListener('click', function () { setOpen(!open, true); });
 
     // A slight random tilt per card, kept for the whole visit
