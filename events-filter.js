@@ -9,6 +9,8 @@
   - v3.3: in the current month, finished events pile into a tilted stack in the
     first cell (the next event is second); click the stack or "Show Past Events"
     to spread them, "Hide Past Events" to stack them again
+  - v3.5: hovering the stack shows a slow gold radar halo and a tooltip that
+    follows the cursor ("Click to see N past events")
 */
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
@@ -234,8 +236,54 @@
       font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: .02em;
     }
 
+    /* v3.5 Hover hint: a slow gold radar halo around the stack, plus a
+       tooltip that follows the cursor, so people know the stack opens */
+    .ev-stack-hit::before,
+    .ev-stack-hit::after {
+      content: ""; position: absolute; inset: -4px;
+      border-radius: 20px; border: 2px solid rgba(221, 144, 88, 0);
+      pointer-events: none; opacity: 0;
+    }
+    @media (hover: hover) {
+      .ev-stack-hit:hover { animation: ev-halo-breathe 3.2s ease-in-out infinite; }
+      .ev-stack-hit:hover::before,
+      .ev-stack-hit:hover::after { animation: ev-radar 3.2s cubic-bezier(.22, 1, .36, 1) infinite; }
+      .ev-stack-hit:hover::after { animation-delay: 1.6s; }
+    }
+    @keyframes ev-radar {
+      0% { opacity: .9; transform: scale(1); border-color: rgba(221, 144, 88, .85); }
+      100% { opacity: 0; transform: scale(1.07); border-color: rgba(221, 144, 88, 0); }
+    }
+    @keyframes ev-halo-breathe {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .25), 0 0 24px rgba(245, 173, 89, .14); }
+      50% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .6), 0 0 60px rgba(245, 173, 89, .34); }
+    }
+    .ev-stack-tip {
+      position: fixed; left: 0; top: 0; z-index: 10000;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 14px 10px 12px; border-radius: 999px;
+      background: #141313; color: #FFFCF8;
+      font-family: Inter, sans-serif; font-size: 13px; font-weight: 500; line-height: 1; letter-spacing: .01em;
+      white-space: nowrap; pointer-events: none;
+      box-shadow: 0 10px 30px rgba(20, 19, 19, .28);
+      opacity: 0; transition: opacity 200ms ease;
+    }
+    .ev-stack-tip.is-on { opacity: 1; }
+    .ev-stack-tip-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: #DD9058; }
+    .ev-stack-tip-dot::after {
+      content: ""; position: absolute; inset: 0; border-radius: 50%;
+      background: #DD9058; animation: ev-tip-ping 1.6s ease-out infinite;
+    }
+    @keyframes ev-tip-ping {
+      0% { transform: scale(1); opacity: .8; }
+      100% { transform: scale(2.6); opacity: 0; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .ev-stacked > .ev-in-stack, .ev-past-toggle svg { transition: none; }
+      .ev-stack-hit:hover, .ev-stack-hit:hover::before, .ev-stack-hit:hover::after,
+      .ev-stack-tip-dot::after { animation: none; }
+      .ev-stack-hit:hover { box-shadow: 0 0 0 2px rgba(221, 144, 88, .6), 0 0 40px rgba(245, 173, 89, .3); }
     }
   `;
 
@@ -284,6 +332,45 @@
     hit.addEventListener('mouseenter', function () { grid.classList.add('ev-stack-hover'); });
     hit.addEventListener('mouseleave', function () { grid.classList.remove('ev-stack-hover'); });
     hit.addEventListener('click', function () { setOpen(true, true); });
+
+    // v3.5 Tooltip that follows the cursor over the stack (mouse/trackpad only)
+    if (window.matchMedia('(hover: hover)').matches) {
+      const tip = document.createElement('div');
+      tip.className = 'ev-stack-tip';
+      tip.setAttribute('aria-hidden', 'true');
+      tip.innerHTML = '<span class="ev-stack-tip-dot"></span><span class="ev-stack-tip-text"></span>';
+      const tipText = tip.lastChild;
+      let tipX = 0;
+      let tipY = 0;
+      let tipFrame = 0;
+
+      const placeTip = function () {
+        tipFrame = 0;
+        tip.style.transform = 'translate(' + (tipX + 16) + 'px, ' + (tipY + 20) + 'px)';
+      };
+      const hideTip = function () { tip.classList.remove('is-on'); };
+
+      hit.addEventListener('pointerenter', function (event) {
+        if (event.pointerType && event.pointerType !== 'mouse') return;
+        if (!tip.isConnected) document.body.appendChild(tip);
+        const count = ((hit.getAttribute('aria-label') || '').match(/\d+/) || [])[0];
+        tipText.textContent = count
+          ? 'Click to see ' + count + ' past event' + (count === '1' ? '' : 's')
+          : 'Click to see past events';
+        tipX = event.clientX;
+        tipY = event.clientY;
+        placeTip();
+        tip.classList.add('is-on');
+      });
+      hit.addEventListener('pointermove', function (event) {
+        tipX = event.clientX;
+        tipY = event.clientY;
+        if (!tipFrame) tipFrame = requestAnimationFrame(placeTip);
+      });
+      hit.addEventListener('pointerleave', hideTip);
+      hit.addEventListener('click', hideTip);
+      window.addEventListener('scroll', hideTip, { passive: true });
+    }
     toggle.addEventListener('click', function () { setOpen(!open, true); });
 
     // A slight random tilt per card, kept for the whole visit
