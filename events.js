@@ -1,1025 +1,960 @@
-/* ==========================================================
-   EVENTS PAGE
-   Same calendar dropdowns as events.js, but "View Event Details"
-   opens a centered, full-screen carousel of every visible event
-   with a Material-style "expand from center" effect:
-   the focused card is full width, its neighbours collapse
-   into narrow slices that grow as they slide toward the center.
+/*
+  Savoya Events filter, v3
 
-   (Formerly events-v2.js.)
-   Loads Swiper from jsDelivr on its own.
-   ========================================================== */
+  - One month at a time, every card for that month on one page
+  - Opens on the current month
+  - The next event (the first one that hasn't ended) is highlighted
+  - Pagination is just "Last Month" and "Next Month"
+  - Search and City still filter; the month buttons skip months with no matches
+  - v3.3: in the current month, finished events pile into a tilted stack in the
+    first cell (the next event is second); click the stack or "Show Past Events"
+    to spread them, "Hide Past Events" to stack them again
+  - v3.5: hovering the stack shows a slow gold radar halo and a tooltip that
+    follows the cursor ("Click to see N past events")
+*/
+(() => {
+  const LIST_ITEM = '.events-collection-list .w-dyn-item';
 
-   (() => {
-    if (window.__savoyaEventsV2) return;
-    window.__savoyaEventsV2 = true;
-  
-    const SWIPER_JS = 'https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js';
-    const SWIPER_CSS = 'https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css';
-  
-    const MAX_WIDTH = 720;        // px, focused card on desktop
-    const COLLAPSED_RATIO = 0.24; // neighbour slice width, as a share of the card
-    const COLLAPSED_RATIO_MOBILE = 0.12;
-    const GAP = 8;                // px between cards
-    const RADIUS = 20;            // px card corner radius
-    const CLOSE_LABEL = 'Close Event Description';
-    const SPEED = 650;            // ms, slide transition
-    const EASE = 'cubic-bezier(.22, 1, .36, 1)'; // shared by the track and the cards
-    // Side cards: slightly see-through, under a flat black overlay,
-    // and the whole row fades out toward the left and right screen edges.
-    const INACTIVE_OPACITY = 0.8; // side card opacity
-    const OVERLAY = 0.75;         // black overlay on side cards (75%)
-    // Depth: side cards sit "behind" the focused one
-    const SIDE_SCALE = 0.9;       // side cards shrink to 90%
-    const SIDE_BLUR = 2;          // px, out-of-focus blur on side cards
-    const SIDE_GRAYSCALE = 0.6;   // colour drains from side cards
-    const PARALLAX = 0.06;        // image drifts inside its card (share of card width)
-    const KEN_BURNS_MS = 10000;   // one zoom + pan on the focused photo (then it reverses)
-  
+  const LABEL_NEXT = 'Up Next';
+  const LABEL_NOW = 'Happening Now';
+  const LABEL_ENDED = 'Event Ended';   // replaces "Add to Calendar" on finished events
+
+  function pagerChevron(path) {
+    return (
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="' + path + '"/></svg>'
+    );
+  }
+
+  function injectStyles() {
+    if (document.getElementById('events-filter-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'events-filter-styles';
+    style.textContent = `
+      /* Next event: dark card */
+      .events-card.ev-next { background: #141313 !important; border-color: #141313 !important; }
+      .ev-next .events-card-dates { color: #DD9058 !important; }
+      .ev-next .events-card-location { color: #C9C6C2 !important; }
+      .ev-next .events-card-title { color: #FFFCF8 !important; }
+      .ev-next .event-details { color: #C9C6C2 !important; }
+      .ev-next .btn-add-to-cal:not(.b-0) { background: rgba(255, 252, 248, .08) !important; color: #FFFCF8 !important; }
+      .ev-next .btn-add-to-cal:not(.b-0) .calendar-toggle-icon::before,
+      .ev-next .btn-add-to-cal:not(.b-0) .calendar-toggle-icon::after { background-color: #FFFCF8 !important; }
+      .ev-next .btn-view-event-details { background: transparent !important; color: #DD9058 !important; }
+
+      /* One lap of the site's gold ring on load. The ring and its glow-spin
+         animation come from .glow-card in core/cards.css; this only plays it once. */
+      @keyframes ev-halo-glow {
+        0% { box-shadow: none; }
+        10%, 80% { box-shadow: 0 0 24px rgba(245, 173, 89, .28), 0 0 60px rgba(197, 97, 41, .16); }
+        100% { box-shadow: none; }
+      }
+      .glow-card.ev-halo::before { opacity: 1; animation: glow-spin 3.5s linear .4s 1 both running; }
+      .glow-card.ev-halo { animation: ev-halo-glow 3.9s ease 1 both; }
+      @media (prefers-reduced-motion: reduce) {
+        .glow-card.ev-halo, .glow-card.ev-halo::before { animation: none; }
+      }
+
+      /* Finished events: black-and-white photo, Add to Calendar disabled.
+         The rest of the card (View Full Description) still works. */
+      .events-card.ev-past .events-img { filter: grayscale(1); }
+      .events-card.ev-past .btn-add-to-cal:not(.b-0) { opacity: .45; cursor: default; pointer-events: none; }
+      .events-card.ev-past .btn-add-to-cal:not(.b-0) .calendar-toggle-icon { display: none; }
+      .events-card.ev-past .item-list-add-to-cal { display: none !important; }
+
+      .ev-next-badge {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 3;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #C56129;
+        color: #FFFCF8;
+        font-family: Inter, sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: .02em;
+        pointer-events: none;
+      }
+
+      /* Month pager */
+      .events-pager {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 48px;
+      }
+      .events-pager[hidden] { display: none; }
+      .events-pager-arrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 44px;
+        padding: 0 18px 0 12px;
+        border: 1px solid rgba(20, 19, 19, .15);
+        border-radius: 8px;
+        background: transparent;
+        color: #141313;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: border-color 200ms ease, color 200ms ease, opacity 200ms ease;
+      }
+      .events-pager-arrow[data-dir="1"] { padding: 0 12px 0 18px; }
+      @media (hover: hover) {
+        .events-pager-arrow:not(:disabled):hover { border-color: #C56129; color: #C56129; }
+      }
+      .events-pager-arrow:disabled { opacity: .3; cursor: default; }
+      .events-pager-arrow:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .events-pager-arrow { transition: none; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function text(el) {
+    return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  /* ---------- City labels: "City, ST" or "City, Country code" ---------- */
+
+  const US_STATES = {
+    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR', 'california': 'CA',
+    'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE', 'district of columbia': 'DC',
+    'florida': 'FL', 'georgia': 'GA', 'hawaii': 'HI', 'idaho': 'ID', 'illinois': 'IL',
+    'indiana': 'IN', 'iowa': 'IA', 'kansas': 'KS', 'kentucky': 'KY', 'louisiana': 'LA',
+    'maine': 'ME', 'maryland': 'MD', 'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN',
+    'mississippi': 'MS', 'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE', 'nevada': 'NV',
+    'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+    'north carolina': 'NC', 'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK', 'oregon': 'OR',
+    'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD',
+    'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT', 'vermont': 'VT', 'virginia': 'VA',
+    'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
+    'puerto rico': 'PR'
+  };
+
+  // Country codes (ISO, except the ones people know by another acronym)
+  const COUNTRIES = {
+    'france': 'FR', 'united kingdom': 'UK', 'england': 'UK', 'great britain': 'UK',
+    'canada': 'CA', 'mexico': 'MX', 'germany': 'DE', 'italy': 'IT', 'spain': 'ES',
+    'portugal': 'PT', 'netherlands': 'NL', 'belgium': 'BE', 'switzerland': 'CH',
+    'austria': 'AT', 'ireland': 'IE', 'monaco': 'MC', 'sweden': 'SE', 'norway': 'NO',
+    'denmark': 'DK', 'greece': 'GR', 'japan': 'JP', 'china': 'CN', 'singapore': 'SG',
+    'australia': 'AU', 'new zealand': 'NZ', 'india': 'IN', 'brazil': 'BR',
+    'united arab emirates': 'UAE', 'saudi arabia': 'SA', 'qatar': 'QA', 'israel': 'IL',
+    'south africa': 'ZA', 'south korea': 'KR', 'hong kong': 'HK'
+  };
+
+  const US_NAMES = /^(united states( of america)?|usa|us|u\.s\.a?\.?)$/i;
+
+  // "Austin, Texas, United States" -> "Austin, TX"
+  // "Washington, DC, United States" -> "Washington, DC"
+  // "Paris, France" -> "Paris, FR"
+  // "TBD" -> "" (left out of the dropdown)
+  function cityLabel(location) {
+    if (!location || /^tbd$/i.test(location)) return '';
+
+    const parts = location.split(',').map(function (part) { return part.trim(); }).filter(Boolean);
+    const inUS = parts.length > 2 && US_NAMES.test(parts[parts.length - 1]);
+    if (inUS) parts.pop();
+
+    const city = parts[0];
+    const region = parts[1];
+    if (!region) return city;
+
+    const key = region.toLowerCase();
+
+    if (/^[A-Za-z]{2,3}$/.test(region)) return city + ', ' + region.toUpperCase();
+    if (US_STATES[key] && (inUS || !COUNTRIES[key])) return city + ', ' + US_STATES[key];
+    if (COUNTRIES[key]) return city + ', ' + COUNTRIES[key];
+    return city + ', ' + region;
+  }
+
+  /* ==========================================================
+     Past-events stack
+     In a month that has both finished and upcoming events, the finished
+     ones pile up in the first grid cell like a stack of cards, each with
+     a slight random tilt. The highlighted next event takes the second cell.
+     Clicking the stack (or the "Show Past Events" button above the grid)
+     spreads them back into the normal grid; the button stacks them again.
+     ========================================================== */
+
+  const STACK_STYLES = `
+    /* Its own line right above the first card, always on the left */
+    .ev-past-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      align-self: flex-start !important;
+      width: auto !important;
+      margin: 8px auto 8px 0 !important;
+      height: 36px; padding: 0 12px 0 16px;
+      border: 1px solid #C9C6C2; border-radius: 999px;
+      background: #FFFFFF; color: #141313;
+      font: inherit; font-size: 14px; font-weight: 500; line-height: 1;
+      white-space: nowrap; cursor: pointer;
+      transition: border-color 200ms ease, color 200ms ease;
+    }
+    .ev-past-toggle[hidden] { display: none; }
+    .ev-past-toggle svg { transition: transform 300ms ease; }
+    .ev-past-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+    @media (hover: hover) { .ev-past-toggle:hover { border-color: #C56129; color: #C56129; } }
+    .ev-past-toggle:focus-visible { outline: 2px solid #C56129; outline-offset: 3px; }
+
+    /* Stacked: every past card sits in the first cell, tilted */
+    .ev-stacked > .ev-in-stack {
+      grid-row: 1; grid-column: 1;
+      transform: rotate(var(--ev-rot, 0deg)) translate(var(--ev-x, 0px), var(--ev-y, 0px));
+      transform-origin: 50% 60%;
+      transition: transform 300ms cubic-bezier(.22, 1, .36, 1);
+    }
+    .ev-stacked > .ev-in-stack .events-card { box-shadow: 0 1px 2px rgba(20, 19, 19, .06), 0 8px 24px rgba(20, 19, 19, .06); }
+    .ev-stacked.ev-stack-hover > .ev-in-stack {
+      transform: rotate(calc(var(--ev-rot, 0deg) * 1.8)) translate(calc(var(--ev-x, 0px) * 1.8), calc(var(--ev-y, 0px) * 1.8));
+    }
+
+    /* The whole stack is one button */
+    .ev-stack-hit {
+      grid-row: 1; grid-column: 1; align-self: stretch;
+      position: relative; z-index: 60;
+      margin: 0; padding: 0; border: 0; border-radius: 12px;
+      background: transparent; cursor: pointer;
+    }
+    .ev-stack-hit[hidden] { display: none; }
+    .ev-stack-hit:focus-visible { outline: 2px solid #C56129; outline-offset: 4px; }
+    .ev-stack-count {
+      position: absolute; top: 16px; left: 16px;
+      padding: 6px 12px; border-radius: 999px;
+      background: #141313; color: #FFFCF8;
+      font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: .02em;
+    }
+
+    /* v3.5 Hover hint: a slow gold radar halo around the stack, plus a
+       tooltip that follows the cursor, so people know the stack opens */
+    .ev-stack-hit::before,
+    .ev-stack-hit::after {
+      content: ""; position: absolute; inset: -4px;
+      border-radius: 20px; border: 2px solid rgba(221, 144, 88, 0);
+      pointer-events: none; opacity: 0;
+    }
+    @media (hover: hover) {
+      .ev-stack-hit:hover { animation: ev-halo-breathe 3.2s ease-in-out infinite; }
+      .ev-stack-hit:hover::before,
+      .ev-stack-hit:hover::after { animation: ev-radar 3.2s cubic-bezier(.22, 1, .36, 1) infinite; }
+      .ev-stack-hit:hover::after { animation-delay: 1.6s; }
+    }
+    @keyframes ev-radar {
+      0% { opacity: .9; transform: scale(1); border-color: rgba(221, 144, 88, .85); }
+      100% { opacity: 0; transform: scale(1.07); border-color: rgba(221, 144, 88, 0); }
+    }
+    @keyframes ev-halo-breathe {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .25), 0 0 24px rgba(245, 173, 89, .14); }
+      50% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .6), 0 0 60px rgba(245, 173, 89, .34); }
+    }
+    .ev-stack-tip {
+      position: fixed; left: 0; top: 0; z-index: 10000;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 14px 10px 12px; border-radius: 999px;
+      background: #141313; color: #FFFCF8;
+      font-family: Inter, sans-serif; font-size: 13px; font-weight: 500; line-height: 1; letter-spacing: .01em;
+      white-space: nowrap; pointer-events: none;
+      box-shadow: 0 10px 30px rgba(20, 19, 19, .28);
+      opacity: 0; transition: opacity 200ms ease;
+    }
+    .ev-stack-tip.is-on { opacity: 1; }
+    .ev-stack-tip-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: #DD9058; }
+    .ev-stack-tip-dot::after {
+      content: ""; position: absolute; inset: 0; border-radius: 50%;
+      background: #DD9058; animation: ev-tip-ping 1.6s ease-out infinite;
+    }
+    @keyframes ev-tip-ping {
+      0% { transform: scale(1); opacity: .8; }
+      100% { transform: scale(2.6); opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ev-stacked > .ev-in-stack, .ev-past-toggle svg { transition: none; }
+      .ev-stack-hit:hover, .ev-stack-hit:hover::before, .ev-stack-hit:hover::after,
+      .ev-stack-tip-dot::after { animation: none; }
+      .ev-stack-hit:hover { box-shadow: 0 0 0 2px rgba(221, 144, 88, .6), 0 0 40px rgba(245, 173, 89, .3); }
+    }
+  `;
+
+  const TOGGLE_ICON =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M6 9l6 6 6-6"/></svg>';
+
+  function createPastStack(grid, anchorEl, settle) {
+    if (!document.getElementById('events-stack-styles')) {
+      const style = document.createElement('style');
+      style.id = 'events-stack-styles';
+      style.textContent = STACK_STYLES;
+      document.head.appendChild(style);
+    }
+
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-    /* Pixel icons: drawn on a 20 x 20 grid, one square per "pixel".
-       At 40px each pixel is exactly 2px, so the lines stay thin and crisp. */
-    const PIXEL_GRID = 20;
+    let shownItems = [];   // every card on screen, in order
+    let pastItems = [];    // the finished ones among them
+    let canStack = false;  // month has both finished and upcoming events
+    let open = false;
+    let groupKey = '';
 
-    function diagonal(x, y, dx, dy, length) {
-      const cells = [];
-      for (let i = 0; i < length; i += 1) cells.push([x + dx * i, y + dy * i]);
-      return cells;
+    // Toggle button on its own line directly above the grid, left-aligned.
+    // The event count above it is left where the page design puts it.
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'ev-past-toggle';
+    toggle.hidden = true;
+
+    const listWrap = grid.parentElement;   // .events-collection-list
+    listWrap.parentElement.insertBefore(toggle, listWrap);
+
+    // Click target covering the stack
+    const hit = document.createElement('button');
+    hit.type = 'button';
+    hit.className = 'ev-stack-hit';
+    hit.hidden = true;
+    const chip = document.createElement('span');
+    chip.className = 'ev-stack-count';
+    chip.setAttribute('aria-hidden', 'true');
+    hit.appendChild(chip);
+    grid.appendChild(hit);
+
+    hit.addEventListener('mouseenter', function () { grid.classList.add('ev-stack-hover'); });
+    hit.addEventListener('mouseleave', function () { grid.classList.remove('ev-stack-hover'); });
+    hit.addEventListener('click', function () { setOpen(true, true); });
+
+    // v3.5 Tooltip that follows the cursor over the stack (mouse/trackpad only)
+    if (window.matchMedia('(hover: hover)').matches) {
+      const tip = document.createElement('div');
+      tip.className = 'ev-stack-tip';
+      tip.setAttribute('aria-hidden', 'true');
+      tip.innerHTML = '<span class="ev-stack-tip-dot"></span><span class="ev-stack-tip-text"></span>';
+      const tipText = tip.lastChild;
+      let tipX = 0;
+      let tipY = 0;
+      let tipFrame = 0;
+
+      const placeTip = function () {
+        tipFrame = 0;
+        tip.style.transform = 'translate(' + (tipX + 16) + 'px, ' + (tipY + 20) + 'px)';
+      };
+      const hideTip = function () { tip.classList.remove('is-on'); };
+
+      hit.addEventListener('pointerenter', function (event) {
+        if (event.pointerType && event.pointerType !== 'mouse') return;
+        if (!tip.isConnected) document.body.appendChild(tip);
+        const count = ((hit.getAttribute('aria-label') || '').match(/\d+/) || [])[0];
+        tipText.textContent = count
+          ? 'Click to see ' + count + ' past event' + (count === '1' ? '' : 's')
+          : 'Click to see past events';
+        tipX = event.clientX;
+        tipY = event.clientY;
+        placeTip();
+        tip.classList.add('is-on');
+      });
+      hit.addEventListener('pointermove', function (event) {
+        tipX = event.clientX;
+        tipY = event.clientY;
+        if (!tipFrame) tipFrame = requestAnimationFrame(placeTip);
+      });
+      hit.addEventListener('pointerleave', hideTip);
+      hit.addEventListener('click', hideTip);
+      window.addEventListener('scroll', hideTip, { passive: true });
+    }
+    toggle.addEventListener('click', function () { setOpen(!open, true); });
+
+    // A slight random tilt per card, kept for the whole visit
+    function tilt(item, isTop) {
+      if (!item.evTilt) {
+        const spread = isTop ? 1.2 : 3;
+        item.evTilt = {
+          rot: (Math.random() * 2 - 1) * spread,
+          x: (Math.random() * 2 - 1) * 6,
+          y: (Math.random() * 2 - 1) * 4
+        };
+      }
+      return item.evTilt;
     }
 
-    const PIXEL_ICONS = {
-      // one-pixel diagonal chevron, doubled at the tip so it stays symmetrical
-      next:  diagonal(6, 2, 1, 1, 8).concat(diagonal(13, 10, -1, 1, 8)),
-      prev:  diagonal(13, 2, -1, 1, 8).concat(diagonal(6, 10, 1, 1, 8)),
-      // x: two diagonals that meet in a 2 x 2 center
-      close: diagonal(2, 2, 1, 1, 16).concat(diagonal(17, 2, -1, 1, 16))
+    function stackTransform(item) {
+      const t = item.evTilt || { rot: 0, x: 0, y: 0 };
+      return 'rotate(' + t.rot.toFixed(2) + 'deg) translate(' + t.x.toFixed(1) + 'px, ' + t.y.toFixed(1) + 'px)';
+    }
+
+    function render() {
+      const stacked = canStack && !open;
+      const count = pastItems.length;
+
+      grid.classList.toggle('ev-stacked', stacked);
+      if (!stacked) grid.classList.remove('ev-stack-hover');
+
+      pastItems.forEach(function (item, i) {
+        const isTop = i === count - 1;   // the most recent finished event ends up on top
+        const t = tilt(item, isTop);
+        item.classList.toggle('ev-in-stack', stacked);
+        item.style.zIndex = stacked ? String(i + 1) : '';
+        item.style.setProperty('--ev-rot', t.rot.toFixed(2) + 'deg');
+        item.style.setProperty('--ev-x', t.x.toFixed(1) + 'px');
+        item.style.setProperty('--ev-y', t.y.toFixed(1) + 'px');
+        item.inert = stacked;
+      });
+
+      hit.hidden = !stacked;
+      chip.textContent = count + (count === 1 ? ' Past Event' : ' Past Events');
+      hit.setAttribute('aria-label', 'Show ' + chip.textContent.toLowerCase());
+
+      toggle.hidden = !canStack;
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.innerHTML = '<span>' + (open ? 'Hide Past Events' : 'Show Past Events (' + count + ')') + '</span>' + TOGGLE_ICON;
+    }
+
+    // FLIP: measure, switch layout, then animate every card from where it was
+    function setOpen(next, animate) {
+      if (!canStack || next === open) return;
+
+      const items = shownItems.slice();
+      const wasStacked = !open;
+      const before = new Map();
+      items.forEach(function (item) { before.set(item, { x: item.offsetLeft, y: item.offsetTop }); });
+
+      open = next;
+      if (open && settle) settle(pastItems);
+      render();
+
+      if (!animate || reducedMotion.matches || !grid.animate) return;
+
+      const nowStacked = !open;
+      items.forEach(function (item, i) {
+        const b = before.get(item);
+        const dx = b.x - item.offsetLeft;
+        const dy = b.y - item.offsetTop;
+        const inStack = pastItems.indexOf(item) >= 0;
+        const from = 'translate(' + dx + 'px, ' + dy + 'px)' + (inStack && wasStacked ? ' ' + stackTransform(item) : '');
+        const to = inStack && nowStacked ? stackTransform(item) : 'none';
+        if (!dx && !dy && from === to) return;
+        item.animate(
+          [{ transform: from }, { transform: to }],
+          { duration: 560, delay: Math.min(i, 8) * 28, easing: 'cubic-bezier(.22, 1, .36, 1)', fill: 'backwards' }
+        );
+      });
+    }
+
+    // The popup asks for a card when it closes; spread the stack if that card is in it
+    document.addEventListener('savoya:events-reveal', function (event) {
+      const item = event.detail && event.detail.item;
+      if (item && !open && canStack && pastItems.indexOf(item) >= 0) setOpen(true, false);
+    });
+
+    // Called after every filter or month change with the cards now shown
+    return function update(shown) {
+      shownItems = shown.map(function (e) { return e.item; });
+      pastItems = shown.filter(function (e) { return e.past; }).map(function (e) { return e.item; });
+      const hasUpcoming = shown.some(function (e) { return !e.past; });
+      canStack = pastItems.length > 0 && hasUpcoming;
+
+      // A different set of finished events (new month or filter) starts stacked
+      const key = pastItems.map(function (item) { return Array.prototype.indexOf.call(grid.children, item); }).join(',');
+      if (key !== groupKey) { open = false; groupKey = key; }
+
+      // Leftover stack styles on cards that are no longer in the group
+      Array.prototype.forEach.call(grid.querySelectorAll('.ev-in-stack'), function (item) {
+        if (pastItems.indexOf(item) < 0) {
+          item.classList.remove('ev-in-stack');
+          item.style.zIndex = '';
+          item.inert = false;
+        }
+      });
+
+      render();
     };
+  }
 
-    function pixelSvg(name, size) {
-      const rects = PIXEL_ICONS[name].map(function (c) {
-        return '<rect x="' + c[0] + '" y="' + c[1] + '" width="1" height="1"/>';
-      }).join('');
-      return (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + PIXEL_GRID + ' ' + PIXEL_GRID + '" width="' + size + '" height="' + size + '" ' +
-        'fill="currentColor" shape-rendering="crispEdges" aria-hidden="true">' + rects + '</svg>'
-      );
+  function init() {
+    const form = document.querySelector('.filter-form-wrapper');
+    const search = document.querySelector('.filter-search');
+    const citySelect = document.getElementById('all-cities');
+    const monthSelect = document.getElementById('all-months');
+    const items = Array.from(document.querySelectorAll(LIST_ITEM));
+
+    if (!items.length) return;
+
+    injectStyles();
+
+    /* ---------- Read each event from its card ---------- */
+
+    // Dates use the visitor's local time
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    function monthKeyOf(date) {
+      return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0');
+    }
+    const currentMonthKey = monthKeyOf(now);
+
+    function cardDates(card) {
+      return Array.from(card.querySelectorAll('.events-card-dates'))
+        .filter(function (el) { return !el.classList.contains('w-dyn-bind-empty'); })
+        .map(function (el) { return new Date(text(el)); })
+        .filter(function (date) { return !isNaN(date); });
     }
 
-    // Same x as a CSS mask, for the "Close Event Description" button (takes the text colour)
-    const PIXEL_X_MASK = 'url("data:image/svg+xml,' +
-      encodeURIComponent(pixelSvg('close', 10).replace('currentColor', '#000')) + '")';
-  
-    /* ==========================================================
-       1. STYLES (carousel only — card styles stay in events.css)
-       ========================================================== */
-  
-    const css = `
-      .ev2-dialog {
-        position: fixed; inset: 0;
-        width: 100vw; height: 100vh; height: 100dvh;
-        max-width: none; max-height: none;
-        margin: 0; padding: 0; border: 0;
-        background: transparent; color: inherit;
-        overflow: hidden;
-      }
-      .ev2-dialog[open] { display: flex; align-items: center; }
-      .ev2-dialog:focus, .ev2-dialog:focus-visible { outline: none; }
-  
-      .ev2-dialog::backdrop {
-        background: rgba(8, 8, 10, .9);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        animation: ev2-fade-in 300ms ease both;
-      }
-      .ev2-dialog.is-closing::backdrop { animation: ev2-fade-out 200ms ease both; }
-  
-      .ev2-dialog .swiper {
-        width: 100%;
-        padding: 24px 0;
-        overflow: visible;
-      }
-      .ev2-dialog .swiper-wrapper { align-items: center; }
-  
-      /* The site styles a .swiper class; keep ours see-through */
-      .ev2-dialog .swiper,
-      .ev2-dialog .swiper-wrapper,
-      .ev2-dialog .swiper-slide { background: transparent !important; }
-  
-      /* Cloned cards skip the scroll-reveal animations */
-      .ev2-dialog .reveal-up,
-      .ev2-dialog .fade-in,
-      .ev2-dialog .focus-in {
-        opacity: 1 !important;
-        transform: none !important;
-        filter: none !important;
-        clip-path: none !important;
-      }
-  
-      .ev2-dialog .swiper-slide {
-        width: var(--ev2-w, ${MAX_WIDTH}px);
-        height: auto;
-      }
-  
-      /* The clipped "window" that grows and shrinks */
-      .ev2-frame {
-        position: relative;
-        width: 100%;
-        max-height: 86vh;
-        max-height: 86dvh;
-        border-radius: ${RADIUS}px;
-        overflow: hidden;
-        background: #fff;
-        transform-origin: 50% 50%;
-        will-change: clip-path, transform, opacity, filter;
-      }
-  
-      /* Soft shadow that follows the clipped card shape */
-      .ev2-dialog .swiper-slide { filter: drop-shadow(0 28px 44px rgba(0, 0, 0, .45)); }
-  
-      /* Image window for the parallax drift */
-      .ev2-media { position: relative; overflow: hidden; aspect-ratio: 16 / 9; }
-      .ev2-dialog .ev2-media img {
-        display: block; width: 100%; height: 100%;
-        object-fit: cover;
-        scale: 1.15;          /* room for the drift */
-        will-change: translate;
-      }
-  
-      /* Flat black overlay on side cards */
-      .ev2-shade {
-        position: absolute; inset: 0;
-        background: rgba(0, 0, 0, ${OVERLAY});
-        pointer-events: none;
-        opacity: 0;
-        z-index: 2;
-      }
-  
-      /* Fade the row out toward the left and right edges of the screen.
-         The focused card (plus a little room for its shadow) stays solid. */
-      .ev2-dialog .swiper {
-        --ev2-solid: calc(var(--ev2-w, 720px) / 2 + 48px);
-        -webkit-mask-image: linear-gradient(to right,
-          transparent 0,
-          #000 calc(50% - var(--ev2-solid)),
-          #000 calc(50% + var(--ev2-solid)),
-          transparent 100%);
-                mask-image: linear-gradient(to right,
-          transparent 0,
-          #000 calc(50% - var(--ev2-solid)),
-          #000 calc(50% + var(--ev2-solid)),
-          transparent 100%);
-      }
-      .ev2-scroll {
-        height: 100%;
-        max-height: inherit;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-      }
-  
-      .ev2-dialog .ev2-frame .events-card {
-        width: 100% !important;
-        max-width: none !important;
-        height: auto;
-        margin: 0 !important;
-        border: none !important;
-        opacity: 1 !important;
-        transform: none !important;
-        visibility: visible !important;
-      }
-  
-      .ev2-dialog .ev2-frame .events-card img {
-        height: auto;
-        aspect-ratio: 16 / 9;
-      }
-  
-      .ev2-dialog .ev2-frame .events-card .event-details {
-        display: block !important;
-        -webkit-line-clamp: unset !important;
-        line-clamp: unset;
-        height: auto !important;
-        max-height: none !important;
-        white-space: normal !important;
-        overflow: visible !important;
-      }
-  
-      /* Track and cards must share one easing, or the cards "pull back" mid-slide */
-      .ev2-dialog { --swiper-wrapper-transition-timing-function: ${EASE}; }
-      .ev2-dialog .swiper-wrapper { transition-timing-function: ${EASE}; }
-  
-      .ev2-dialog .ev2-frame .btn-view-event-details::after {
-        content: "";
-        display: inline-block;
-        flex: none;
-        width: 1em;
-        height: 1em;
-        margin-left: .5em;
-        vertical-align: -.125em;
-        background: currentColor;
-        -webkit-mask: ${PIXEL_X_MASK} center / contain no-repeat;
-                mask: ${PIXEL_X_MASK} center / contain no-repeat;
-      }
-  
-      /* Collapsed neighbours: whole slice is a "go to" target */
-      .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-frame { cursor: pointer; }
-      .ev2-dialog .swiper-slide:not(.swiper-slide-active) .ev2-scroll { pointer-events: none; }
-  
-      /* Close + chevrons: bare white pixel icons, no circle behind them */
-      .ev2-close,
-      .ev2-nav {
-        position: fixed;
-        z-index: 20;
-        display: grid;
-        place-items: center;
-        width: 56px;
-        height: 56px;
-        padding: 0;
-        border: 0;
-        border-radius: 4px;
-        background: none;
-        color: #fff;
-        cursor: pointer;
-        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .45));
-        transition: transform 240ms ${EASE}, opacity 180ms ease;
-      }
-      .ev2-close svg,
-      .ev2-nav svg { display: block; width: 40px; height: 40px; pointer-events: none; }
-      .ev2-close { top: 16px; right: 16px; }
-      .ev2-nav { top: 50%; margin-top: -28px; }
-      .ev2-prev { left: 8.33%; }
-      .ev2-next { right: 8.33%; }
-      .ev2-nav.swiper-button-disabled { opacity: .3; cursor: default; }
+    const events = [];
 
-      /* Hover: chevrons step two pixels (4px) the way they point; the x steps up */
-      @media (hover: hover) {
-        .ev2-prev:not(.swiper-button-disabled):hover { transform: translateX(-4px); }
-        .ev2-next:not(.swiper-button-disabled):hover { transform: translateX(4px); }
-        .ev2-close:hover { transform: scale(1.1); }
-      }
-      .ev2-nav:active:not(.swiper-button-disabled),
-      .ev2-close:active { opacity: .7; }
-      .ev2-close:focus-visible,
-      .ev2-nav:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    items.forEach(function (item) {
+      const card = item.querySelector('.events-card') || item;
+      const location = text(card.querySelector('.events-card-location'));
+      const dates = cardDates(card);
+      const start = dates[0];
+      const end = dates.length ? dates[dates.length - 1] : null;
+      const valid = !!start;
 
-      @media (max-width: 991px) {
-        .ev2-nav { display: none; }
-      }
-  
-      .ev2-dialog.is-single .ev2-nav { display: none; }
-  
-      @keyframes ev2-fade-in  { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes ev2-fade-out { from { opacity: 1; } to { opacity: 0; } }
-  
-      @media (prefers-reduced-motion: reduce) {
-        .ev2-dialog::backdrop,
-        .ev2-dialog.is-closing::backdrop { animation: none; }
-        .ev2-close, .ev2-nav { transition: none; }
-      }
-    `;
-  
-    const style = document.createElement('style');
-    style.textContent = css;
-    document.head.appendChild(style);
-  
-    /* ==========================================================
-       2. LOAD SWIPER (once)
-       ========================================================== */
-  
-    function loadSwiper() {
-      if (window.Swiper) return Promise.resolve(window.Swiper);
-  
-      if (!document.querySelector(`link[href="${SWIPER_CSS}"]`)) {
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = SWIPER_CSS;
-        document.head.appendChild(link);
-      }
-  
-      return new Promise(function (resolve, reject) {
-        const existing = document.querySelector(`script[src="${SWIPER_JS}"]`);
-        const script = existing || document.createElement('script');
-  
-        script.addEventListener('load', function () { resolve(window.Swiper); });
-        script.addEventListener('error', reject);
-  
-        if (!existing) {
-          script.src = SWIPER_JS;
-          document.head.appendChild(script);
-        }
+      // Finished = its last day is before today
+      const past = !!(end && end < today);
+      const started = !!(start && start <= today);
+
+      // An event that began in an earlier month and is still running files under this month
+      const monthDate = valid && !past && start < monthStart ? monthStart : start;
+
+      events.push({
+        item: item,
+        card: card,
+        past: past,
+        started: started,
+        city: cityLabel(location),
+        monthKey: valid ? monthKeyOf(monthDate) : '',
+        monthLabel: valid
+          ? monthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          : '',
+        time: valid ? start.getTime() : Infinity,
+        haystack: (
+          text(card.querySelector('.events-card-title')) + ' ' +
+          location + ' ' +
+          text(card.querySelector('.event-details'))
+        ).toLowerCase()
       });
-    }
-  
-    /* ==========================================================
-       3. SHARED BUTTON ACCESSIBILITY
-       ========================================================== */
-  
-    function prepareButton(button) {
-      if (button.dataset.ev2Ready) return;
-      button.dataset.ev2Ready = 'true';
-  
-      if (button.tagName === 'BUTTON') {
-        button.type = 'button';
-        return;
-      }
-  
-      button.setAttribute('role', 'button');
-      button.setAttribute('tabindex', '0');
-  
-      button.addEventListener('keydown', function (event) {
-        const nativeLink = button.tagName === 'A' && button.hasAttribute('href');
-  
-        if (event.key === ' ' || (event.key === 'Enter' && !nativeLink)) {
-          event.preventDefault();
-          button.click();
-        }
+    });
+
+    /* ---------- Calendar order: soonest start first ---------- */
+
+    events.sort(function (a, b) { return a.time - b.time; });
+
+    const listParent = items[0].parentElement;
+    events.forEach(function (event) { listParent.appendChild(event.item); });
+
+    /* ---------- Mark finished events and the next one ---------- */
+
+    const badge = document.createElement('span');
+    badge.className = 'ev-next-badge';
+
+    // Finished events: black-and-white photo and a disabled "Event Ended" button.
+    // The popup (events.js) copies cards with their classes, so it matches.
+    events.forEach(function (e) {
+      if (!e.past) return;
+      e.card.classList.add('ev-past');
+
+      const button = e.card.querySelector('.btn-add-to-cal:not(.b-0)');
+      if (!button) return;
+      const label = Array.from(button.childNodes).find(function (node) {
+        return node.nodeType === 3 && node.textContent.trim();
       });
-    }
-  
-    /* ==========================================================
-       4. ADD TO CALENDAR DROPDOWNS
-       Works on page cards and on the cloned cards in the carousel.
-       ========================================================== */
-  
-    const dropdowns = [];
-    let dropdownCount = 0;
-  
-    function setupDropdowns(root) {
-      root.querySelectorAll('.calendar-dropdown').forEach(function (wrapper) {
-        if (wrapper.dataset.ev2Dropdown) return;
-        wrapper.dataset.ev2Dropdown = 'true';
-  
-        const button = wrapper.querySelector('.btn-add-to-cal');
-        const list = wrapper.querySelector('.item-list-add-to-cal');
-  
-        if (!button || !list) return;
-  
-        const pageCard = wrapper.closest('.w-dyn-item .events-card');
-        let isOpen = false;
-        let listAnimation = null;
-        let cardAnimation = null;
-  
-        list.id = 'ev2-calendar-options-' + (dropdownCount += 1);
-  
-        prepareButton(button);
-        button.setAttribute('aria-controls', list.id);
-        button.setAttribute('aria-expanded', 'false');
-        button.classList.remove('br-bottom-0');
-  
-        list.style.display = 'none';
-        list.style.flexDirection = 'column';
-        list.inert = true;
-  
-        if (!button.querySelector('.calendar-toggle-icon')) {
-          const icon = document.createElement('span');
-          icon.className = 'calendar-toggle-icon';
-          icon.setAttribute('aria-hidden', 'true');
-          button.appendChild(icon);
-        }
-  
-        function setListDisplay(display) {
-          if (!pageCard || reducedMotion.matches) {
-            list.style.display = display;
-            return;
-          }
-  
-          const fromHeight = getComputedStyle(pageCard).height;
-  
-          if (cardAnimation) cardAnimation.cancel();
-          list.style.display = display;
-  
-          const toHeight = getComputedStyle(pageCard).height;
-          if (fromHeight === toHeight) return;
-  
-          cardAnimation = pageCard.animate(
-            [
-              { height: fromHeight, overflow: 'hidden' },
-              { height: toHeight, overflow: 'hidden' }
-            ],
-            {
-              duration: display === 'none' ? 280 : 420,
-              easing: 'cubic-bezier(.16, 1, .3, 1)'
-            }
-          );
-        }
-  
-        function setOpen(open, immediate) {
-          if (immediate) {
-            if (listAnimation) listAnimation.cancel();
-            if (cardAnimation) cardAnimation.cancel();
-            listAnimation = null;
-            cardAnimation = null;
-            isOpen = open;
-            button.classList.toggle('br-bottom-0', open);
-            button.setAttribute('aria-expanded', String(open));
-            list.inert = !open;
-            list.style.display = open ? 'flex' : 'none';
-            return;
-          }
-  
-          if (isOpen === open) return;
-  
-          const current = getComputedStyle(list);
-          const isVisible = current.display !== 'none';
-          const from = {
-            opacity: isVisible ? current.opacity : '0',
-            transform: isVisible ? current.transform : 'translateY(-8px) scale(.98)'
-          };
-  
-          if (listAnimation) {
-            listAnimation.cancel();
-            listAnimation = null;
-          }
-  
-          isOpen = open;
-          button.classList.toggle('br-bottom-0', open);
-          button.setAttribute('aria-expanded', String(open));
-  
-          if (!open && list.contains(document.activeElement)) button.focus();
-  
-          list.inert = !open;
-  
-          if (reducedMotion.matches) {
-            setListDisplay(open ? 'flex' : 'none');
-            return;
-          }
-  
-          setListDisplay('flex');
-  
-          const nextAnimation = list.animate(
-            [
-              from,
-              {
-                opacity: open ? 1 : 0,
-                transform: open ? 'translateY(0) scale(1)' : 'translateY(-6px) scale(.985)'
-              }
-            ],
-            {
-              duration: open ? 360 : 180,
-              easing: open ? 'cubic-bezier(.16, 1, .3, 1)' : 'cubic-bezier(.4, 0, 1, 1)',
-              fill: 'both'
-            }
-          );
-  
-          listAnimation = nextAnimation;
-  
-          nextAnimation.onfinish = function () {
-            if (listAnimation !== nextAnimation) return;
-            if (!isOpen) setListDisplay('none');
-            nextAnimation.cancel();
-            listAnimation = null;
-          };
-        }
-  
-        dropdowns.push({ wrapper: wrapper, setOpen: setOpen });
-  
-        button.addEventListener('click', function (event) {
+      if (label) label.textContent = LABEL_ENDED + ' ';
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('tabindex', '-1');
+    });
+
+    // Block clicks and keys on a disabled button, in the grid and in the popup
+    ['click', 'keydown'].forEach(function (type) {
+      document.addEventListener(type, function (event) {
+        const target = event.target;
+        if (!target || !target.closest) return;
+        if (type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        if (target.closest('.events-card.ev-past .btn-add-to-cal:not(.b-0)')) {
           event.preventDefault();
-          const shouldOpen = !isOpen;
-  
-          dropdowns.forEach(function (item) {
-            if (item.wrapper !== wrapper) item.setOpen(false);
-          });
-  
-          setOpen(shouldOpen);
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    });
+
+    // The halo plays one lap, once per page load, the first time the
+    // highlighted card is on screen (on phones it can start below the fold)
+    let haloPlayed = false;
+    let haloWatch = null;
+
+    function playHalo(card) {
+      if (haloPlayed) return;
+      if (haloWatch) haloWatch.disconnect();
+
+      function play() {
+        haloPlayed = true;
+        card.classList.remove('ev-halo');
+        void card.offsetWidth;
+        card.classList.add('ev-halo');
+        card.addEventListener('animationend', function done(event) {
+          if (event.animationName !== 'ev-halo-glow') return;
+          card.classList.remove('ev-halo');
+          card.removeEventListener('animationend', done);
         });
-  
-        wrapper.addEventListener('keydown', function (event) {
-          if (event.key === 'Escape' && isOpen) {
+      }
+
+      if (!('IntersectionObserver' in window)) { play(); return; }
+      haloWatch = new IntersectionObserver(function (entries) {
+        if (entries.some(function (entry) { return entry.isIntersecting; })) {
+          haloWatch.disconnect();
+          play();
+        }
+      }, { threshold: 0.5 });
+      haloWatch.observe(card);
+    }
+
+    // Highlights the one next event (first unfinished one that fits the
+    // search and city), and only when its month is the one on screen
+    function markNext(candidates, shown) {
+      events.forEach(function (e) { e.card.classList.remove('ev-next', 'glow-card', 'ev-halo'); });
+      badge.remove();
+
+      const next = candidates.find(function (e) { return !e.past; });
+      if (!next || shown.indexOf(next) < 0) return;
+
+      // glow-card (core/cards.css) also gives it the site's ring on hover
+      next.card.classList.add('ev-next', 'glow-card');
+      badge.textContent = next.started ? LABEL_NOW : LABEL_NEXT;
+      next.card.appendChild(badge);
+      playHalo(next.card);
+    }
+
+    /* ---------- Fill the City and Month dropdowns ---------- */
+
+    function fillSelect(select, entries, keepPlaceholder) {
+      if (!select) return;
+
+      const placeholder = select.options[0];
+      select.innerHTML = '';
+      if (placeholder && keepPlaceholder) {
+        placeholder.value = '';
+        select.appendChild(placeholder);
+      }
+
+      entries.forEach(function (entry) {
+        const option = document.createElement('option');
+        option.value = entry.value;
+        option.textContent = entry.label;
+        select.appendChild(option);
+      });
+    }
+
+    const cities = Array.from(new Set(events.map(function (e) { return e.city; })))
+      .filter(Boolean)
+      .sort()
+      .map(function (city) { return { value: city, label: city }; });
+
+    const months = [];
+    events.forEach(function (e) {
+      if (e.monthKey && !months.some(function (m) { return m.value === e.monthKey; })) {
+        months.push({ value: e.monthKey, label: e.monthLabel });
+      }
+    });
+    months.sort(function (a, b) { return a.value < b.value ? -1 : a.value > b.value ? 1 : 0; });
+
+    fillSelect(citySelect, cities, true);
+    fillSelect(monthSelect, months, false);   // always one month, so no "All Months"
+
+    // Current month; if it has no events, the next month that does
+    // (or the latest one, if every event is in the past)
+    const defaultMonth = (function () {
+      if (!months.length) return '';
+      const ahead = months.find(function (m) { return m.value >= currentMonthKey; });
+      return (ahead || months[months.length - 1]).value;
+    })();
+
+    let month = defaultMonth;
+    if (monthSelect) monthSelect.value = month;
+
+    function monthLabel(key) {
+      const m = months.find(function (entry) { return entry.value === key; });
+      return m ? m.label : '';
+    }
+
+    /* ---------- Count, empty state, active tags ---------- */
+
+    const countEl = document.querySelector('.database-overline');
+
+    const emptyEl = document.createElement('p');
+    emptyEl.className = 'events-empty v2-par';
+    emptyEl.hidden = true;
+    listParent.parentElement.appendChild(emptyEl);
+
+    const tagTemplate = document.querySelector('[fs-cmsfilter-element="tag-template"]');
+    const tagGroup = tagTemplate && tagTemplate.parentElement;
+
+    if (tagTemplate) tagTemplate.remove();
+
+    function renderTags(active) {
+      if (!tagGroup || !tagTemplate) return;
+
+      tagGroup.innerHTML = '';
+
+      active.forEach(function (filter) {
+        const tag = tagTemplate.cloneNode(true);
+        const label = tag.querySelector('[fs-cmsfilter-element="tag-text"]');
+        const remove = tag.querySelector('[fs-cmsfilter-element="tag-remove"]');
+
+        tag.removeAttribute('fs-cmsfilter-element');
+        if (label) label.textContent = filter.label;
+
+        if (remove) {
+          remove.setAttribute('role', 'button');
+          remove.setAttribute('tabindex', '0');
+          remove.setAttribute('aria-label', 'Remove filter: ' + filter.label);
+          remove.style.cursor = 'pointer';
+
+          const clearOne = function (event) {
             event.preventDefault();
-            event.stopPropagation();
-            setOpen(false);
-            button.focus();
-          }
-        });
-  
-        list.addEventListener('click', function (event) {
-          if (event.target.closest('a, button')) setOpen(false);
-        });
+            filter.clear();
+            apply();
+          };
+
+          remove.addEventListener('click', clearOne);
+          remove.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') clearOne(event);
+          });
+        }
+
+        tagGroup.appendChild(tag);
       });
     }
-  
-    document.addEventListener('click', function (event) {
-      dropdowns.forEach(function (item) {
-        if (item.wrapper.isConnected && !item.wrapper.contains(event.target)) {
-          item.setOpen(false);
-        }
-      });
+
+    /* ---------- Month pager: Last Month / Next Month ---------- */
+
+    const grid = listParent;               // the CMS grid (.w-dyn-items)
+    const listWrap = grid.parentElement;   // .events-collection-list
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    const pager = document.createElement('nav');
+    pager.className = 'events-pager';
+    pager.setAttribute('aria-label', 'Event months');
+    pager.innerHTML =
+      '<button type="button" class="events-pager-arrow" data-dir="-1">' +
+        pagerChevron('M15 18l-6-6 6-6') + '<span>Last Month</span>' +
+      '</button>' +
+      '<button type="button" class="events-pager-arrow" data-dir="1">' +
+        '<span>Next Month</span>' + pagerChevron('M9 18l6-6-6-6') +
+      '</button>';
+    listWrap.parentElement.insertBefore(pager, listWrap.nextSibling);
+
+    // Finished events of the current month stack up in the first cell
+    const updateStack = createPastStack(grid, countEl, function (stackItems) {
+      settleCards(events.filter(function (e) { return stackItems.indexOf(e.item) >= 0; }));
     });
-  
-    function closeAllDropdowns() {
-      dropdowns.forEach(function (item) { item.setOpen(false, true); });
+
+    const prevBtn = pager.querySelector('[data-dir="-1"]');
+    const nextBtn = pager.querySelector('[data-dir="1"]');
+
+    let prevMonth = '';
+    let nextMonth = '';
+    let sliding = null;
+
+    function renderPager(monthsWithMatches) {
+      const before = monthsWithMatches.filter(function (m) { return m < month; });
+      const after = monthsWithMatches.filter(function (m) { return m > month; });
+      prevMonth = before[before.length - 1] || '';
+      nextMonth = after[0] || '';
+
+      prevBtn.disabled = !prevMonth;
+      nextBtn.disabled = !nextMonth;
+      prevBtn.setAttribute('aria-label', prevMonth ? 'Last Month: ' + monthLabel(prevMonth) : 'No earlier events');
+      nextBtn.setAttribute('aria-label', nextMonth ? 'Next Month: ' + monthLabel(nextMonth) : 'No later events');
+      pager.hidden = !prevMonth && !nextMonth;
     }
-  
-    /* Card width + slice ratio adapt to the screen so the
-       neighbouring slices always stay visible */
-  
-    function currentRatio() {
-      return window.innerWidth < 768 ? COLLAPSED_RATIO_MOBILE : COLLAPSED_RATIO;
-    }
-  
-    /* The page cards ask for card-sized photos (see prepareCardImages).
-       In the carousel the photo is much wider and the Ken Burns zooms in
-       further, so the cloned photos ask for a large enough file again. */
-    function sizeCarouselImages() {
-      const cardWidth = parseFloat(dialog.style.getPropertyValue('--ev2-w')) || MAX_WIDTH;
-      const needed = Math.ceil(cardWidth * 1.3); // 1.3 = deepest Ken Burns zoom
-  
-      wrapperEl.querySelectorAll('.ev2-media img').forEach(function (img) {
-        img.loading = 'eager';
-        img.sizes = needed + 'px';
-      });
-    }
-  
-    function sizeSlides() {
-      const r = currentRatio();
-      const room = (window.innerWidth - 32 - GAP * 2) / (1 + r);
-      const width = Math.max(240, Math.min(MAX_WIDTH, Math.floor(room)));
-      dialog.style.setProperty('--ev2-w', width + 'px');
-    }
-  
-    /* ==========================================================
-       5. MATERIAL "EXPAND FROM CENTER" EFFECT
-       Each slide is clipped from both sides based on its distance
-       from the center, then shifted so the visible parts keep an
-       even GAP between them. Distance 0 = full card,
-       distance ≥ 1 = narrow slice (COLLAPSED_RATIO).
-       ========================================================== */
-  
-    function applyMaterial(swiper) {
-      const slides = swiper.slides;
-      if (!slides.length) return;
-  
-      const W = slides[0].offsetWidth;
-      const S = GAP;
-      const r = currentRatio();
-  
-      // Distance between the centers of a full card and a collapsed neighbour
-      // Side cards are scaled down, so measure their visible (scaled) width
-      // to keep the gutter exactly GAP wide.
-      const sliver = r * W * SIDE_SCALE;
-      const firstStep = W / 2 + S + sliver / 2;
-      // Distance between two collapsed neighbours
-      const nextStep = sliver + S;
-  
-      // Our own progress: 0 = centered, +1 = one card to the left, -1 = one to the right.
-      // (Swiper's slide.progress drifts a few % with auto-width slides + spaceBetween,
-      //  which left the focused card slightly clipped and shaded.)
-      const grid = swiper.slidesGrid;
-      const step = W + S;
-  
-      slides.forEach(function (slide, index) {
-        const p = grid[index] === undefined ? slide.progress : (-swiper.translate - grid[index]) / step;
-        const d = Math.abs(p);
-        const sign = p === 0 ? 0 : p > 0 ? -1 : 1; // negative progress = to the right
-  
-        const visibleRatio = 1 - (1 - r) * Math.min(d, 1);
-        const clip = ((1 - visibleRatio) * W) / 2;
-  
-        const desired = d <= 1 ? d * firstStep : firstStep + (d - 1) * nextStep;
-        const natural = d * (W + S);
-        const shift = sign * (desired - natural);
-  
-        const frame = slide.querySelector('.ev2-frame');
-        if (!frame) return;
-  
-        frame.style.clipPath =
-          'inset(0 ' + clip.toFixed(2) + 'px 0 ' + clip.toFixed(2) + 'px round ' + RADIUS + 'px)';
-        // 0 = focused, 1 = fully a side card
-        const amount = Math.min(d, 1);
-        const scale = 1 - (1 - SIDE_SCALE) * amount;
-  
-        frame.style.transform =
-          'translate3d(' + shift.toFixed(2) + 'px, 0, 0) scale(' + scale.toFixed(4) + ')';
-  
-        // Side cards: fade, drain colour, soften focus, darken under the overlay
-        frame.style.opacity = String(1 - (1 - INACTIVE_OPACITY) * amount);
-        frame.style.filter = amount < 0.001
-          ? 'none'
-          : 'blur(' + (SIDE_BLUR * amount).toFixed(2) + 'px) grayscale(' + (SIDE_GRAYSCALE * amount).toFixed(3) + ')';
-  
-        const shade = frame.querySelector('.ev2-shade');
-        if (shade) shade.style.opacity = String(amount);
-  
-        // Parallax: the photo drifts the other way as the card travels
-        const img = frame.querySelector('.ev2-media img');
-        if (img) {
-          const drift = Math.max(-1, Math.min(1, p)) * W * PARALLAX;
-          // "translate" (not "transform"): the photo's reveal-up class forces transform: none
-          img.style.translate = drift.toFixed(2) + 'px 0';
-        }
-  
-        slide.style.zIndex = String(100 - Math.round(d * 10));
-      });
-    }
-  
-    function setMaterialTransition(swiper, duration) {
-      swiper.slides.forEach(function (slide) {
-        const frame = slide.querySelector('.ev2-frame');
-        if (!frame) return;
-        frame.style.transitionProperty = 'clip-path, transform, opacity, filter';
-        frame.style.transitionDuration = duration + 'ms';
-        frame.style.transitionTimingFunction = EASE;
-  
-        const shade = frame.querySelector('.ev2-shade');
-        if (shade) {
-          shade.style.transitionProperty = 'opacity';
-          shade.style.transitionDuration = duration + 'ms';
-          shade.style.transitionTimingFunction = EASE;
-        }
-  
-        const img = frame.querySelector('.ev2-media img');
-        if (img) {
-          img.style.transitionProperty = 'translate';
-          img.style.transitionDuration = duration + 'ms';
-          img.style.transitionTimingFunction = EASE;
-        }
-      });
-    }
-  
-    /* ==========================================================
-       6. THE CAROUSEL DIALOG
-       ========================================================== */
-  
-    const dialog = document.createElement('dialog');
-    dialog.className = 'ev2-dialog';
-    dialog.setAttribute('aria-label', 'Event details');
-    dialog.innerHTML = `
-      <button class="ev2-close" type="button" aria-label="${CLOSE_LABEL}">${pixelSvg('close', 40)}</button>
-      <button class="ev2-nav ev2-prev" type="button" aria-label="Previous event">${pixelSvg('prev', 40)}</button>
-      <button class="ev2-nav ev2-next" type="button" aria-label="Next event">${pixelSvg('next', 40)}</button>
-      <div class="swiper"><div class="swiper-wrapper"></div></div>
-    `;
-    document.body.appendChild(dialog);
-  
-    const swiperEl = dialog.querySelector('.swiper');
-    const wrapperEl = dialog.querySelector('.swiper-wrapper');
-    const closeButton = dialog.querySelector('.ev2-close');
-    const prevButton = dialog.querySelector('.ev2-prev');
-    const nextButton = dialog.querySelector('.ev2-next');
-  
-    let swiper = null;
-    let returnFocus = null;
-    let closing = false;
-    let previousOverflow = '';
-  
-    function buildSlide(card) {
-      const clone = card.cloneNode(true);
-  
-      // Clean up anything that must stay unique or page-only
-      clone.querySelectorAll('[id]').forEach(function (el) { el.removeAttribute('id'); });
-      clone.querySelectorAll('[data-ev2-dropdown], [data-ev2-ready]').forEach(function (el) {
-        delete el.dataset.ev2Dropdown;
-        delete el.dataset.ev2Ready;
-      });
-      clone.querySelectorAll('.calendar-toggle-icon').forEach(function (el) { el.remove(); });
-      clone.querySelectorAll('.ev-img-wait').forEach(function (el) { el.classList.remove('ev-img-wait'); });
-      clone.removeAttribute('style');
-  
-      const details = clone.querySelector('.btn-view-event-details');
-      if (details) {
-        details.textContent = CLOSE_LABEL;
-        details.removeAttribute('aria-haspopup');
-        details.removeAttribute('aria-controls');
-        details.removeAttribute('aria-expanded');
-        details.addEventListener('click', function (event) {
-          event.preventDefault();
-          closeCarousel();
+
+    // Cards in a newly shown month skip the scroll fade-in; the slide is their entrance
+    function settleCards(shown) {
+      shown.forEach(function (e) {
+        e.card.classList.add('fade-in-active');
+        e.item.querySelectorAll('.reveal-up').forEach(function (el) {
+          el.classList.add('reveal-up-active');
         });
-        prepareButton(details);
-      }
-  
-      const slide = document.createElement('div');
-      slide.className = 'swiper-slide';
-      slide.ev2Source = card; // the page card this slide was cloned from
-  
-      const frame = document.createElement('div');
-      frame.className = 'ev2-frame';
-  
-      const scroll = document.createElement('div');
-      scroll.className = 'ev2-scroll';
-  
-      const shade = document.createElement('div');
-      shade.className = 'ev2-shade';
-      shade.setAttribute('aria-hidden', 'true');
-  
-      // Wrap the photo so it can drift inside a fixed window
-      const photo = clone.querySelector('.events-img');
-      if (photo) {
-        const media = document.createElement('div');
-        media.className = 'ev2-media';
-        photo.parentNode.insertBefore(media, photo);
-        media.appendChild(photo);
-      }
-  
-      scroll.appendChild(clone);
-      frame.appendChild(scroll);
-      frame.appendChild(shade);
-      slide.appendChild(frame);
-  
-      setupDropdowns(clone);
-  
-      return slide;
-    }
-  
-    async function openCarousel(card, button) {
-      if (dialog.open) return;
-  
-      const Swiper = await loadSwiper();
-  
-      closeAllDropdowns();
-  
-      // Every event that matches the search/filters, on every page
-      // (events-filter.js hides other pages with .ev-off-page)
-      const cards = Array.from(document.querySelectorAll('.events .w-dyn-item .events-card'))
-        .filter(function (item) {
-          const li = item.closest('.w-dyn-item');
-          if (li && li.classList.contains('ev-off-page')) return li.style.display !== 'none';
-          return item.getClientRects().length > 0;
-        });
-  
-      const startIndex = Math.max(cards.indexOf(card), 0);
-  
-      wrapperEl.innerHTML = '';
-      cards.forEach(function (item) { wrapperEl.appendChild(buildSlide(item)); });
-  
-      dialog.classList.toggle('is-single', cards.length < 2);
-  
-      returnFocus = button;
-      previousOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-  
-      dialog.showModal();
-      closeButton.focus({ preventScroll: true });
-  
-      sizeSlides();
-      sizeCarouselImages();
-  
-      swiper = new Swiper(swiperEl, {
-        slidesPerView: 'auto',
-        centeredSlides: true,
-        spaceBetween: GAP,
-        initialSlide: startIndex,
-        speed: reducedMotion.matches ? 0 : SPEED,
-        grabCursor: true,
-        watchSlidesProgress: true,
-        slideToClickedSlide: true,
-        keyboard: { enabled: true },
-        a11y: { enabled: true },
-        navigation: { prevEl: prevButton, nextEl: nextButton },
-        on: {
-          init: applyMaterial,
-          progress: applyMaterial,
-          setTranslate: applyMaterial,
-          beforeResize: function () { sizeSlides(); sizeCarouselImages(); },
-          resize: applyMaterial,
-          setTransition: setMaterialTransition,
-          slideChange: function (s) {
-            closeAllDropdowns();
-            dialog.querySelectorAll('.ev2-scroll').forEach(function (el) { el.scrollTop = 0; });
-            revealContent(s.slides[s.activeIndex], 180);
-            kenBurns(s);
-          }
-        }
-      });
-  
-      applyMaterial(swiper);
-  
-      if (!reducedMotion.matches) {
-        // Opens from the center: the focused card grows out of the middle
-        swiperEl.animate(
-          [
-            { opacity: 0, transform: 'scale(.9)' },
-            { opacity: 1, transform: 'scale(1)' }
-          ],
-          { duration: 450, easing: 'cubic-bezier(.16, 1, .3, 1)' }
-        );
-  
-        dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
-          el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease' });
-        });
-  
-        revealContent(swiper.slides[swiper.activeIndex], 220);
-      }
-  
-      kenBurns(swiper);
-    }
-  
-    // Ken Burns: the focused photo slowly zooms and pans.
-    // Side cards pause where they are, so nothing jumps when a card leaves focus.
-    function kenBurns(swiper) {
-      if (reducedMotion.matches) return;
-  
-      swiper.slides.forEach(function (slide, index) {
-        const img = slide.querySelector('.ev2-media img');
-        if (!img) return;
-  
-        if (index === swiper.activeIndex) {
-          if (!img.ev2KenBurns) {
-            // Uses "scale" + transform-origin, so it layers on top of the parallax "translate"
-            img.ev2KenBurns = img.animate(
-              [
-                { scale: 1.15, transformOrigin: '35% 55%' },
-                { scale: 1.3, transformOrigin: '65% 40%' }
-              ],
-              {
-                duration: KEN_BURNS_MS,
-                easing: 'ease-in-out',
-                direction: 'alternate',
-                iterations: Infinity
-              }
-            );
-          }
-          img.ev2KenBurns.play();
-        } else if (img.ev2KenBurns) {
-          img.ev2KenBurns.pause();
-        }
       });
     }
-  
-    // The focused card's text rises in, one line after another
-    function revealContent(slide, delay) {
-      if (!slide || reducedMotion.matches) return;
-  
-      const parts = slide.querySelectorAll(
-        '.events-card-heading > *, .event-details, .events-footer'
-      );
-  
-      parts.forEach(function (el, i) {
-        el.getAnimations().forEach(function (a) { a.cancel(); });
-        el.animate(
-          [
-            { opacity: 0, transform: 'translateY(14px)' },
-            { opacity: 1, transform: 'translateY(0)' }
-          ],
-          { duration: 600, delay: delay + i * 70, easing: EASE, fill: 'backwards' }
-        );
-      });
-    }
-  
-    function closeCarousel() {
-      if (!dialog.open || closing) return;
-      closing = true;
-  
-      if (reducedMotion.matches) {
-        dialog.close();
-        return;
+
+    function goToMonth(key, dir) {
+      if (!key) return;
+
+      function swap() {
+        month = key;
+        if (monthSelect) monthSelect.value = key;
+        settleCards(apply());
+        const top = listWrap.getBoundingClientRect().top;
+        if (top < 0) window.scrollBy({ top: top - 120, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
       }
-  
-      dialog.classList.add('is-closing');
-  
-      const motion = swiperEl.animate(
+
+      if (sliding) sliding.cancel();
+      if (reducedMotion.matches || !grid.animate) { swap(); return; }
+
+      const out = grid.animate(
         [
-          { opacity: 1, transform: 'scale(1)' },
-          { opacity: 0, transform: 'scale(.94)' }
+          { transform: 'translateX(0)', opacity: 1 },
+          { transform: 'translateX(' + (-dir * 64) + 'px)', opacity: 0 }
         ],
-        { duration: 200, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' }
+        { duration: 220, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' }
       );
-  
-      dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
-        el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards' });
-      });
-  
-      motion.onfinish = function () { dialog.close(); };
+      sliding = out;
+
+      out.onfinish = function () {
+        if (sliding !== out) return;
+        swap();
+        const inn = grid.animate(
+          [
+            { transform: 'translateX(' + (dir * 64) + 'px)', opacity: 0 },
+            { transform: 'translateX(0)', opacity: 1 }
+          ],
+          { duration: 480, easing: 'cubic-bezier(.22, 1, .36, 1)' }
+        );
+        out.cancel();
+        sliding = inn;
+        inn.onfinish = function () { if (sliding === inn) sliding = null; };
+      };
     }
-  
-    dialog.addEventListener('close', function () {
-      // The card the visitor ended on: bring its page into view and return focus to it
-      const activeSlide = swiper && swiper.slides[swiper.activeIndex];
-      const endCard = activeSlide && activeSlide.ev2Source;
-      let scrollToEnd = false;
 
-      if (endCard) {
-        document.dispatchEvent(new CustomEvent('savoya:events-reveal', {
-          detail: { item: endCard.closest('.w-dyn-item') }
-        }));
-        const endButton = endCard.querySelector('.btn-view-event-details');
-        if (endButton && endButton !== returnFocus) {
-          returnFocus = endButton;
-          scrollToEnd = true;
-        }
-      }
+    prevBtn.addEventListener('click', function () { goToMonth(prevMonth, -1); });
+    nextBtn.addEventListener('click', function () { goToMonth(nextMonth, 1); });
 
-      if (swiper) {
-        swiper.destroy(true, true);
-        swiper = null;
+    // Touch swipe on the grid
+    let touchStart = null;
+    grid.addEventListener('touchstart', function (event) {
+      if (event.touches.length !== 1) return;
+      touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    }, { passive: true });
+    grid.addEventListener('touchend', function (event) {
+      if (!touchStart) return;
+      const t = event.changedTouches[0];
+      const dx = t.clientX - touchStart.x;
+      const dy = t.clientY - touchStart.y;
+      touchStart = null;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        if (dx < 0) goToMonth(nextMonth, 1);
+        else goToMonth(prevMonth, -1);
       }
-  
-      // Forget dropdowns that lived in the carousel
-      for (let i = dropdowns.length - 1; i >= 0; i -= 1) {
-        if (dialog.contains(dropdowns[i].wrapper)) dropdowns.splice(i, 1);
-      }
-  
-      wrapperEl.innerHTML = '';
-      swiperEl.getAnimations().forEach(function (a) { a.cancel(); });
-      dialog.querySelectorAll('.ev2-close, .ev2-nav').forEach(function (el) {
-        el.getAnimations().forEach(function (a) { a.cancel(); });
+    }, { passive: true });
+
+    /* ---------- Apply filters ---------- */
+
+    // Shows the chosen month's matching cards; returns them
+    function apply() {
+      const query = search ? search.value.trim().toLowerCase() : '';
+      const city = citySelect ? citySelect.value : '';
+
+      // Events that fit the search and city, in any month
+      const candidates = events.filter(function (e) {
+        return (!query || e.haystack.includes(query)) && (!city || e.city === city);
       });
-  
-      dialog.classList.remove('is-closing', 'is-single');
-      document.body.style.overflow = previousOverflow;
-      closing = false;
-  
-      if (returnFocus) returnFocus.focus({ preventScroll: true });
-      if (scrollToEnd && endCard) endCard.scrollIntoView({ block: 'center' });
-      returnFocus = null;
-    });
-  
-    closeButton.addEventListener('click', closeCarousel);
-  
-    dialog.addEventListener('cancel', function (event) {
-      event.preventDefault();
-      closeCarousel();
-    });
-  
-    // Click on the dark background (not on a card or button) closes
-    dialog.addEventListener('click', function (event) {
-      if (
-        event.target === dialog ||
-        event.target === swiperEl ||
-        event.target === wrapperEl ||
-        event.target.classList.contains('swiper-slide')
-      ) {
-        closeCarousel();
+      const monthList = Array.from(new Set(candidates
+        .map(function (e) { return e.monthKey; })
+        .filter(Boolean))).sort();
+
+      // If this month has no matches, move to the nearest month that does
+      // (the next one ahead first, otherwise the latest earlier one)
+      if (monthList.length && monthList.indexOf(month) < 0) {
+        const ahead = monthList.find(function (m) { return m > month; });
+        month = ahead || monthList[monthList.length - 1];
+        if (monthSelect) monthSelect.value = month;
       }
-    });
-  
-    /* ==========================================================
-       7. WIRE UP THE PAGE
-       ========================================================== */
-  
-    /* ----------------------------------------------------------
-       Card photos: let the reveal-up play on the real photo.
-       The photos are lazy-loaded, so the mask used to open on an
-       empty box before the photo arrived. Each photo now stays
-       masked until it has loaded, then reveals.
-       ---------------------------------------------------------- */
-  
-    const CARD_IMAGE_SIZES = '(max-width: 767px) 92vw, (max-width: 991px) 46vw, 30vw';
-  
-    function prepareCardImages() {
-      const waitStyle = document.createElement('style');
-      waitStyle.textContent =
-        '.events .w-dyn-item .events-img.ev-img-wait { clip-path: inset(100% 0 0 0) !important; }';
-      document.head.appendChild(waitStyle);
-  
-      // Chrome (153+) won't start a lazy image while a clip-path hides it
-      // completely, and the mask only opens once the photo has loaded, so neither
-      // happens. This observer ignores clip-path: when a card comes near the
-      // screen, its photo loads right away.
-      const nearScreen = 'IntersectionObserver' in window
-        ? new IntersectionObserver(function (entries) {
-            entries.forEach(function (entry) {
-              if (!entry.isIntersecting) return;
-              const img = entry.target.querySelector('.events-img');
-              if (img) img.loading = 'eager';
-              nearScreen.unobserve(entry.target);
-            });
-          }, { rootMargin: '400px 0px' })
-        : null;
 
-      document.querySelectorAll('.events .w-dyn-item .events-img').forEach(function (img) {
-        // Webflow sets sizes="100vw", which downloads a full-screen-width photo
-        // for a card a third of the screen wide. Ask for a card-sized one instead.
-        if (img.getAttribute('sizes') === '100vw') img.sizes = CARD_IMAGE_SIZES;
-  
-        if (img.classList.contains('w-dyn-bind-empty')) return;
-        if (img.complete && img.naturalWidth > 0) return;
-  
-        img.classList.add('ev-img-wait');
-
-        const card = img.closest('.events-card') || img;
-        if (nearScreen) nearScreen.observe(card);
-        else img.loading = 'eager';
-  
-        const release = function () { img.classList.remove('ev-img-wait'); };
-  
-        img.addEventListener('load', release, { once: true });
-        img.addEventListener('error', release, { once: true });
+      const shown = [];
+      events.forEach(function (e) {
+        const match = candidates.indexOf(e) >= 0 && e.monthKey === month;
+        e.item.style.display = match ? '' : 'none';
+        if (match) shown.push(e);
       });
-    }
-  
-    function init() {
-      prepareCardImages();
-      setupDropdowns(document);
-  
-      document.querySelectorAll('.events .btn-view-event-details').forEach(function (button) {
-        prepareButton(button);
-        button.setAttribute('aria-haspopup', 'dialog');
-  
-        button.addEventListener('click', function (event) {
-          event.preventDefault();
-          const card = button.closest('.events-card');
-          if (card) openCarousel(card, button);
+
+      markNext(candidates, shown);
+      updateStack(shown);
+      renderPager(monthList);
+
+      if (countEl) {
+        countEl.textContent =
+          shown.length + (shown.length === 1 ? ' event available' : ' events available');
+      }
+
+      emptyEl.textContent = 'No events match your filters.';
+      emptyEl.hidden = shown.length > 0;
+
+      const active = [];
+
+      if (query) {
+        active.push({
+          label: '“' + search.value.trim() + '”',
+          clear: function () { search.value = ''; }
         });
+      }
+
+      if (city) {
+        active.push({
+          label: city,
+          clear: function () { citySelect.value = ''; }
+        });
+      }
+
+      renderTags(active);
+      return shown;
+    }
+
+    /* ---------- Inputs ---------- */
+
+    let typing = null;
+
+    if (search) {
+      search.addEventListener('input', function () {
+        clearTimeout(typing);
+        typing = setTimeout(apply, 150);
       });
-  
-      // Warm up Swiper so the first click opens instantly
-      loadSwiper().catch(function () {});
     }
-  
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', init, { once: true });
-    } else {
-      init();
+
+    if (citySelect) citySelect.addEventListener('change', apply);
+
+    if (monthSelect) {
+      monthSelect.addEventListener('change', function () {
+        const key = monthSelect.value;
+        if (key && key !== month) goToMonth(key, key > month ? 1 : -1);
+      });
     }
-  })();
+
+    // Stop Webflow's form handler: Enter just filters, it never submits.
+    if (form) {
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        apply();
+      }, true);
+    }
+
+    document.querySelectorAll('[fs-cmsfilter-element="clear"]').forEach(function (link) {
+      link.addEventListener('click', function (event) {
+        event.preventDefault();
+        if (search) search.value = '';
+        if (citySelect) citySelect.value = '';
+        month = defaultMonth;
+        if (monthSelect) monthSelect.value = month;
+        apply();
+      });
+    });
+
+    apply();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
+})();
