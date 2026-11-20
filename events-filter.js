@@ -10,8 +10,10 @@
     first cell (the next event is second); click the stack or "Show Past Events"
     to spread them, "Hide Past Events" to stack them again
   - v3.5: hovering the stack shows a slow gold radar halo and a tooltip that
-    follows the cursor ("Click to see N past events")  - v3.6: while hovered, the stacked cards riffle like a dealer's deck
-    (lift one after another, fan out, drop back) every few seconds
+    follows the cursor ("Click to see N past events")
+  - v3.7: the halo border is gone; a soft gold glow with radar pulses now sits
+    behind the stack, and while hovered the top card is cut and tucked under
+    the deck like a dealer's cut every few seconds
 */
 (() => {
   const LIST_ITEM = '.events-collection-list .w-dyn-item';
@@ -237,27 +239,40 @@
       font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; line-height: 1; letter-spacing: .02em;
     }
 
-    /* v3.5 Hover hint: a slow gold radar halo around the stack, plus a
-       tooltip that follows the cursor, so people know the stack opens */
-    .ev-stack-hit::before,
-    .ev-stack-hit::after {
-      content: ""; position: absolute; inset: -4px;
-      border-radius: 20px; border: 2px solid rgba(221, 144, 88, 0);
-      pointer-events: none; opacity: 0;
+    /* v3.7 Hover hint: a soft gold glow with radar pulses BEHIND the stack,
+       plus a tooltip that follows the cursor, so people know the stack opens */
+    .ev-stack-glow {
+      grid-row: 1; grid-column: 1; align-self: stretch;
+      position: relative; z-index: 0; pointer-events: none;
+      opacity: 0; transition: opacity 900ms ease;
     }
-    @media (hover: hover) {
-      .ev-stack-hit:hover { animation: ev-halo-breathe 3.2s ease-in-out infinite; }
-      .ev-stack-hit:hover::before,
-      .ev-stack-hit:hover::after { animation: ev-radar 3.2s cubic-bezier(.22, 1, .36, 1) infinite; }
-      .ev-stack-hit:hover::after { animation-delay: 1.6s; }
+    .ev-stack-glow[hidden] { display: none; }
+    .ev-stack-glow::before, .ev-stack-glow > span {
+      content: ""; position: absolute; left: 50%; top: 50%; pointer-events: none;
     }
-    @keyframes ev-radar {
-      0% { opacity: .9; transform: scale(1); border-color: rgba(221, 144, 88, .85); }
-      100% { opacity: 0; transform: scale(1.07); border-color: rgba(221, 144, 88, 0); }
+    .ev-stack-glow::before {
+      width: 100%; height: 100%; transform: translate(-50%, -50%);
+      border-radius: 40px; filter: blur(22px);
+      background: radial-gradient(closest-side, rgba(245, 173, 89, .55), rgba(245, 173, 89, .18) 60%, rgba(245, 173, 89, 0));
     }
-    @keyframes ev-halo-breathe {
-      0%, 100% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .25), 0 0 24px rgba(245, 173, 89, .14); }
-      50% { box-shadow: 0 0 0 1px rgba(221, 144, 88, .6), 0 0 60px rgba(245, 173, 89, .34); }
+    .ev-stack-glow > span {
+      width: 120%; aspect-ratio: 1; transform: translate(-50%, -50%) scale(.7);
+      border-radius: 50%; opacity: 0;
+      background: radial-gradient(closest-side, rgba(245, 173, 89, 0) 62%, rgba(245, 173, 89, .45) 78%, rgba(245, 173, 89, 0) 100%);
+    }
+    .ev-stacked.ev-stack-hover > .ev-stack-glow { opacity: 1; }
+    .ev-stacked.ev-stack-hover > .ev-stack-glow::before { animation: ev-glow-breathe 3.6s ease-in-out infinite; }
+    .ev-stacked.ev-stack-hover > .ev-stack-glow > span { animation: ev-glow-radar 3.6s cubic-bezier(.2, .6, .3, 1) infinite; }
+    .ev-stacked.ev-stack-hover > .ev-stack-glow > span:nth-child(2) { animation-delay: 1.2s; }
+    .ev-stacked.ev-stack-hover > .ev-stack-glow > span:nth-child(3) { animation-delay: 2.4s; }
+    @keyframes ev-glow-breathe {
+      0%, 100% { opacity: .75; transform: translate(-50%, -50%) scale(.97); }
+      50% { opacity: 1; transform: translate(-50%, -50%) scale(1.03); }
+    }
+    @keyframes ev-glow-radar {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(.7); }
+      20% { opacity: .9; }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(1.45); }
     }
     .ev-stack-tip {
       position: fixed; left: 0; top: 0; z-index: 10000;
@@ -282,9 +297,9 @@
 
     @media (prefers-reduced-motion: reduce) {
       .ev-stacked > .ev-in-stack, .ev-past-toggle svg { transition: none; }
-      .ev-stack-hit:hover, .ev-stack-hit:hover::before, .ev-stack-hit:hover::after,
+      .ev-stacked.ev-stack-hover > .ev-stack-glow::before,
+      .ev-stacked.ev-stack-hover > .ev-stack-glow > span,
       .ev-stack-tip-dot::after { animation: none; }
-      .ev-stack-hit:hover { box-shadow: 0 0 0 2px rgba(221, 144, 88, .6), 0 0 40px rgba(245, 173, 89, .3); }
     }
   `;
 
@@ -330,6 +345,14 @@
     hit.appendChild(chip);
     grid.appendChild(hit);
 
+    // v3.7 Glow that sits behind the stacked cards (z-index 0, cards are 1..n)
+    const glow = document.createElement('div');
+    glow.className = 'ev-stack-glow';
+    glow.hidden = true;
+    glow.setAttribute('aria-hidden', 'true');
+    glow.innerHTML = '<span></span><span></span><span></span>';
+    grid.appendChild(glow);
+
     hit.addEventListener('mouseenter', function () { grid.classList.add('ev-stack-hover'); });
     hit.addEventListener('mouseleave', function () { grid.classList.remove('ev-stack-hover'); });
     hit.addEventListener('click', function () { setOpen(true, true); });
@@ -373,41 +396,62 @@
       window.addEventListener('scroll', hideTip, { passive: true });
     }
 
-    // v3.6 Dealer-style riffle: while the stack is hovered, the cards lift one
-    // after another (bottom card first), fan out a little and drop back into
-    // the stack, every few seconds. Skipped for reduced motion.
-    const RIFFLE_EVERY = 2600; // ms between riffles while hovered
-    let riffleTimer = 0;
+    // v3.7 Dealer-style cut: while the stack is hovered, the top card slides
+    // out to the side, tucks under the deck and slides back in, one smooth
+    // move every few seconds. Skipped for reduced motion.
+    const CUT_EVERY = 2900; // ms between cuts while hovered
+    let cutTimer = 0;
+    let cutting = false;
+    let cutAnims = [];
 
-    function riffle() {
-      if (reducedMotion.matches || hit.hidden) return;
-      const cards = Array.from(grid.querySelectorAll('.ev-in-stack'))
+    function stackOrder() {
+      return Array.from(grid.querySelectorAll('.ev-in-stack'))
         .sort(function (a, b) { return (Number(a.style.zIndex) || 0) - (Number(b.style.zIndex) || 0); });
-      cards.forEach(function (item, i) {
-        const card = item.querySelector('.events-card') || item;
-        if (!card.animate) return;
-        const dir = i % 2 ? 1 : -1;
-        card.animate([
-          { transform: 'translate(0, 0) rotate(0deg)' },
-          { transform: 'translate(' + (dir * 12) + 'px, -22px) rotate(' + (dir * 3) + 'deg)', offset: 0.45 },
-          { transform: 'translate(0, 0) rotate(0deg)' }
-        ], { duration: 620, delay: i * 110, easing: 'cubic-bezier(.22, 1, .36, 1)' });
-      });
     }
 
-    function stopRiffle() {
-      clearInterval(riffleTimer);
-      riffleTimer = 0;
+    function cut() {
+      if (reducedMotion.matches || hit.hidden || cutting) return;
+      const order = stackOrder();
+      if (order.length < 2) return;
+      const top = order[order.length - 1];
+      const card = top.querySelector('.events-card') || top;
+      if (!card.animate) return;
+      const away = 'translate(62%, -14px) rotate(8deg)';
+      cutting = true;
+      const out = card.animate(
+        [{ transform: 'translate(0, 0) rotate(0deg)' }, { transform: away }],
+        { duration: 620, easing: 'cubic-bezier(.3, .7, .25, 1)', fill: 'forwards' }
+      );
+      cutAnims = [out];
+      out.finished.then(function () {
+        if (!top.classList.contains('ev-in-stack')) { out.cancel(); cutting = false; return; }
+        // Tuck it under: the top card goes to the bottom, the rest move up one
+        top.style.zIndex = '1';
+        order.slice(0, -1).forEach(function (item, i) { item.style.zIndex = String(i + 2); });
+        const back = card.animate(
+          [{ transform: away }, { transform: 'translate(0, 0) rotate(0deg)' }],
+          { duration: 680, easing: 'cubic-bezier(.45, 0, .2, 1)' }
+        );
+        out.cancel();
+        cutAnims = [back];
+        return back.finished;
+      }).catch(function () {}).then(function () { cutting = false; cutAnims = []; });
+    }
+
+    function stopCut(snap) {
+      clearInterval(cutTimer);
+      cutTimer = 0;
+      if (snap) cutAnims.forEach(function (anim) { anim.cancel(); });
     }
 
     hit.addEventListener('pointerenter', function (event) {
       if (event.pointerType && event.pointerType !== 'mouse') return;
-      riffle();
-      stopRiffle();
-      riffleTimer = setInterval(riffle, RIFFLE_EVERY);
+      stopCut(false);
+      cut();
+      cutTimer = setInterval(cut, CUT_EVERY);
     });
-    hit.addEventListener('pointerleave', stopRiffle);
-    hit.addEventListener('click', stopRiffle);
+    hit.addEventListener('pointerleave', function () { stopCut(false); });
+    hit.addEventListener('click', function () { stopCut(true); });
     toggle.addEventListener('click', function () { setOpen(!open, true); });
 
     // A slight random tilt per card, kept for the whole visit
@@ -447,6 +491,7 @@
       });
 
       hit.hidden = !stacked;
+      glow.hidden = !stacked;
       chip.textContent = count + (count === 1 ? ' Past Event' : ' Past Events');
       hit.setAttribute('aria-label', 'Show ' + chip.textContent.toLowerCase());
 
